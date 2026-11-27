@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AIYT Studio</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand"><img src="icon.png" alt="" /><div><b>AIYT Studio</b><small>Shorts on autopilot</small></div></div>
+    <nav>
+      <button data-page="create" class="active"><svg viewBox="0 0 24 24"><path d="M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z"/><path d="M19 17v4M17 19h4"/></svg>Create</button>
+      <button data-page="autopilot"><svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>Autopilot</button>
+      <button data-page="trends"><svg viewBox="0 0 24 24"><path d="M12 2c1 4 5 5 5 10a5 5 0 0 1-10 0c0-2 1-3 2-4 0 2 1 3 2 3 0-3-1-6 1-9z"/></svg>Trends</button>
+      <button data-page="research"><svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>Niche research</button>
+      <button data-page="clips"><svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg>Clips</button>
+      <button data-page="rebrand"><svg viewBox="0 0 24 24"><path d="M12 2l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 14.4l-4.8 2.5.9-5.4-3.9-3.8 5.4-.8z"/><path d="M5 21h14"/></svg>Channel setup</button>
+      <button data-page="library"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>Library</button>
+      <button data-page="published"><svg viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>Published</button>
+      <button data-page="analytics"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Analytics</button>
+      <button data-page="comments"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Comments</button>
+      <button data-page="settings"><svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>Settings</button>
+    </nav>
+    <div class="swap"><label for="chanSel">Ch.</label><select id="chanSel" title="Your YouTube channels: switch, or add a new one"></select></div>
+    <div class="swap"><label for="aiSwap">AI</label><select id="aiSwap" title="Quick swap: use this AI for every job"></select></div>
+    <div class="usage" id="usage" title="AI usage: click for details"></div>
+    <div class="channel" id="channel"><span class="dot"></span><span id="channelName">YouTube not connected</span></div>
+    <div class="live hidden" id="liveStats" title="Live from YouTube. Click to refresh now"><span class="pulse"></span><div><b id="liveSubs">–</b><small>subscribers</small></div><div><b id="liveViews">–</b><small>views</small></div><div><b id="liveLikes">–</b><small>likes</small></div><div class="mon" id="liveMon"></div></div>
+  </aside>
+
+  <main>
+    <!-- CREATE -->
+    <section class="page active" id="page-create">
+      <header><h1>Create shorts</h1><p>Write a topic, get a finished vertical video with voiceover, captions and thumbnail.</p></header>
+      <div id="setupBox"></div>
+      <div class="smartBox"></div>
+      <div class="card">
+        <div class="row between"><label class="lbl" for="topics" style="margin:0">Topics <span class="hint">one per line, each line becomes one short</span></label>
+          <div class="row"><input id="ideaCount" type="number" min="1" max="20" value="5" class="w90" title="How many ideas" /><button id="btnChannelIdeas">✨ Suggest for my channel</button></div></div>
+        <p class="note" id="channelAbout" style="margin:6px 0 8px"></p>
+        <textarea id="topics" rows="5" placeholder="Why octopuses have three hearts&#10;The deepest hole ever dug&#10;What happens if you stop sleeping"></textarea>
+        <div class="grid4">
+          <div><label class="lbl">Script writer</label><select data-setting="writer" class="writer-select"></select></div>
+          <div><label class="lbl">Voice</label><div class="row"><select data-setting="voice"><option value="kokoro">Kokoro (free, on this PC)</option><option value="piper">Piper (fastest, on this PC)</option><option value="gemini">Gemini AI voice</option><option value="local">Windows voice (basic)</option></select><button class="ghost btnPreview" title="Hear the current voice">▶</button></div></div>
+          <div><label class="lbl">Visuals</label><select data-setting="visuals" class="visuals-select"></select></div>
+          <div><label class="lbl">Length <span class="hint" id="secondsOut"></span></label><input type="range" min="15" max="90" step="5" data-setting="seconds" id="seconds" /></div>
+        </div>
+        <label class="lbl" for="createTags">Extra tags <span class="hint">optional, comma separated</span></label>
+        <input id="createTags" placeholder="space facts, science, did you know" />
+        <div class="row end"><button class="primary" id="btnGenerate">Generate shorts</button></div>
+      </div>
+    </section>
+
+    <!-- AUTOPILOT -->
+    <section class="page" id="page-autopilot">
+      <header><h1>Autopilot</h1><p>Run it daily on a schedule, or make one batch now.</p></header>
+      <div class="card" id="autoCard">
+        <div class="row between"><h3 style="margin:0">Daily automation</h3><label class="row"><input type="checkbox" id="auOn" /> <b>On</b></label></div>
+        <p class="note" style="margin:6px 0 0">Every day the AI picks shorts for your channel (a short that is blowing up first, then what is trending in general and in your niche), makes them, and publishes each at its time. If making them runs past a time, that short is published as soon as it is ready. Runs while this app is open.</p>
+        <div class="grid4">
+          <div><label class="lbl">Shorts per day</label><input id="auPer" type="number" min="1" max="10" /></div>
+          <div><label class="lbl">For how many days</label><input id="auDays" type="number" min="1" max="365" /></div>
+          <div><label class="lbl">Starting</label><input id="auStart" type="date" /></div>
+          <div><label class="lbl">Start making at</label><input id="auMake" type="time" /></div>
+        </div>
+        <label class="lbl">Publish times</label><div id="auTimes" class="row wrap"></div>
+        <div class="row between" style="margin-top:14px"><span class="muted small" id="auStatus"></span><button id="btnAutoNow">Run today's batch now</button></div>
+      </div>
+      <header style="margin-top:8px"><h1 style="font-size:20px">One-off batch</h1><p>Pick a niche. The AI researches what is working, writes the ideas, makes every short and schedules them on YouTube.</p></header>
+      <div class="card">
+        <div class="grid2">
+          <div><label class="lbl" for="apNiche">Niche</label><input id="apNiche" placeholder="e.g. space facts, ancient history, ocean animals" /></div>
+          <div><label class="lbl" for="apCount">How many shorts</label><input id="apCount" type="number" min="1" max="30" value="7" /></div>
+        </div>
+        <label class="lbl">After making them</label>
+        <div class="seg" id="apMode">
+          <button data-mode="schedule" class="active">Schedule on YouTube</button>
+          <button data-mode="now">Upload now</button>
+          <button data-mode="none">Just make them</button>
+        </div>
+        <div id="apSchedule" class="grid2">
+          <div><label class="lbl" for="apStart">First post</label><input id="apStart" type="datetime-local" /></div>
+          <div><label class="lbl" for="apPerDay">Posts per day</label><select id="apPerDay"><option>1</option><option selected>2</option><option>3</option><option>4</option><option>6</option></select></div>
+        </div>
+        <div id="apNow" class="hidden"><label class="lbl">Visibility</label><select id="apPrivacy"><option value="public">Public</option><option value="unlisted">Unlisted</option><option value="private">Private</option></select></div>
+        <div id="apSlots" class="slots"></div>
+        <p class="note">Uses your Create settings (writer, voice, visuals, length). Scheduled shorts are uploaded as private and YouTube publishes each at its time, so your PC can be off after the uploads finish.</p>
+        <div class="row end"><button class="primary" id="btnAutopilot">Start autopilot</button></div>
+      </div>
+    </section>
+
+    <!-- TRENDS -->
+    <section class="page" id="page-trends">
+      <header><h1>Trends</h1><p>What is taking off right now on Google and YouTube, which trends fit your channel, and why the winners hold attention.</p></header>
+      <div class="smartBox"></div>
+      <div class="card row wrap">
+        <select id="trGeo" class="w90" title="Country"><option>US</option><option>GB</option><option>CA</option><option>AU</option><option>IN</option><option>ZA</option><option>NG</option><option>DE</option><option>FR</option><option>BR</option></select>
+        <select id="trCat" style="width:180px" title="YouTube category"><option value="">All categories</option><option value="28">Science &amp; Tech</option><option value="27">Education</option><option value="24">Entertainment</option><option value="23">Comedy</option><option value="20">Gaming</option><option value="17">Sports</option><option value="10">Music</option><option value="15">Pets &amp; Animals</option><option value="26">How-to &amp; Style</option><option value="25">News</option><option value="2">Cars</option><option value="22">People &amp; Blogs</option></select>
+        <label class="row muted small"><input type="checkbox" id="trShorts" checked /> Shorts only</label>
+        <span class="grow"></span>
+        <button id="btnTrends">Refresh trends</button><button class="primary" id="btnPicks">✨ AI picks for my channel</button>
+      </div>
+      <div id="trPicks"></div>
+      <div class="grid2" style="align-items:start"><div class="card"><h3>Rising on Google today</h3><div id="trGoogle" class="muted small">Press Refresh trends.</div></div>
+        <div class="card"><h3>Trending on YouTube</h3><p class="note" id="trNote" style="margin:0 0 8px"></p><div id="trYoutube"></div></div></div>
+      <div class="card"><h3>Hot in your niche <span class="hint" id="trNicheQ"></span></h3><div id="trNiche" class="muted small">Press Refresh trends.</div></div>
+      <div class="card"><h3>Why does this video work?</h3><p class="note" style="margin:0 0 10px">Paste any YouTube, TikTok, Instagram or X link. It is downloaded and transcribed on this PC, its cuts are measured, and your AI explains the hook, structure and retention tricks.</p>
+        <div class="row"><input id="wUrl" class="grow" placeholder="https://www.youtube.com/shorts/…" /><button class="primary" id="btnWatch">Analyze</button></div><div id="wReport"></div></div>
+    </section>
+
+    <!-- RESEARCH -->
+    <section class="page" id="page-research">
+      <header><h1>Niche research</h1><p>Live data from this month's top Shorts, analysed by your AI to find angles, ideas and the tags winners use.</p></header>
+      <div class="card row wrap">
+        <input id="rsNiche" class="grow" placeholder="Niche to research, e.g. psychology facts" />
+        <input id="rsCount" type="number" min="3" max="30" value="10" class="w90" title="Ideas" />
+        <button class="primary" id="btnResearch">Research</button>
+        <button id="btnSuggest">Suggest niches with AI</button>
+      </div>
+      <div id="niches" class="niche-grid"></div>
+      <div id="rsResult"></div>
+    </section>
+
+    <!-- CLIPS -->
+    <section class="page" id="page-clips">
+      <header><h1>Clips</h1><p>Turn the best moment of a longer video into a short with an AI hook, voice intro, subtitles and thumbnail.</p></header>
+      <div class="card">
+        <div class="seg" id="clipSrc">
+          <button data-src="youtube" class="active">YouTube (Creative Commons)</button><button data-src="twitch">Twitch top clips</button><button data-src="link">Paste links</button>
+        </div>
+        <div id="srcYoutube" class="row wrap" style="margin-top:14px">
+          <input id="ccQuery" class="grow" placeholder="Topic, e.g. space documentary, cooking, science lecture" />
+          <button class="primary" id="btnCc">Find videos</button><button id="btnCcChannel">Find for my channel</button>
+        </div>
+        <div id="srcTwitch" class="row wrap hidden" style="margin-top:14px">
+          <input id="twLogin" class="grow" placeholder="Twitch streamer username" />
+          <select id="twDays" class="w90"><option value="1">24 h</option><option value="7" selected>7 days</option><option value="30">30 days</option></select>
+          <button class="primary" id="btnTwitch">Find top clips</button>
+        </div>
+        <div id="srcLink" class="hidden" style="margin-top:14px">
+          <textarea id="clipLinks" rows="3" placeholder="One link per line: Twitch clips, Kick clips, or YouTube videos you have rights to"></textarea>
+        </div>
+        <p class="note" id="clipNote"></p>
+        <label class="row hidden" id="permRow" style="margin-top:12px"><input type="checkbox" id="permOk" /><span>I have the creator's permission to use these clips, or they are from my own channel.</span></label>
+      </div>
+      <div class="toolbar"><span class="muted" id="clipSel">0 selected</span>
+        <div class="row"><label class="muted small" for="clipPer">Shorts per video</label><select id="clipPer" class="w90"><option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option></select><input id="clipTags" placeholder="Extra tags (optional)" style="width:220px" /><button class="primary" id="btnMakeClips">Make shorts</button></div></div>
+      <div class="card filters" id="clipFilters">
+        <div><label class="lbl">Sort</label><select id="fSort">
+          <option value="smart">Popular · English first · likes</option><option value="views">Most views</option><option value="likes">Most likes</option>
+          <option value="ratio">Best like rate</option><option value="comments">Most comments</option><option value="new">Newest</option><option value="long">Longest</option><option value="short">Shortest</option></select></div>
+        <div><label class="lbl">Length <span class="hint">new search</span></label><select id="fLen"><option value="medium">4–20 min</option><option value="long">20+ min</option><option value="short">Under 4 min</option><option value="any">Any</option></select></div>
+        <div><label class="lbl">Min views</label><input id="fMin" type="number" min="0" step="1000" placeholder="0" /></div>
+        <div><label class="lbl">Show</label><div class="checks"><label><input type="checkbox" id="fEnglish" checked /> English only</label><label><input type="checkbox" id="fFresh" /> Hide used videos</label></div></div>
+      </div>
+      <div id="clipResults" class="jobs"></div>
+      <div class="row" style="justify-content:center;margin-top:16px"><button id="btnMore" class="hidden">Load 50 more</button></div>
+    </section>
+
+    <!-- REBRAND -->
+    <section class="page" id="page-rebrand">
+      <header><h1>Channel setup</h1><p>Start a new channel the smart way: the AI finds the niche most likely to grow and earn, designs the whole channel, and once you link it, starts making the best content for it.</p></header>
+      <div class="card">
+        <h3>1 · Who designs it?</h3>
+        <div class="grid2">
+          <div><label class="lbl">AI for planning and writing</label><select id="wzWriter"></select></div>
+          <div><label class="lbl">Images (banner and profile picture) <span class="hint" id="wzImgState"></span></label>
+            <div class="row"><select id="wzImage"><option value="flux">FLUX: local, free, on your GPU</option><option value="gemini">Gemini: needs a paid key</option></select>
+              <button id="btnFluxSetup" class="hidden">Set up FLUX (~10 GB)</button></div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row between"><h3 style="margin:0">2 · Pick the niche</h3><button class="primary" id="btnNiches">✨ Find the best niches for me</button></div>
+        <p class="note" style="margin:6px 0 10px">The AI shortlists niches, checks each against this month's real Shorts, and scores the chance a new channel grows and earns.</p>
+        <div id="wzNiches" class="niche-grid"></div>
+        <div class="row wrap"><input id="rbNiche" class="grow" placeholder="…or type a niche, e.g. luxury cars, true crime, AI tools" />
+          <button class="primary" id="btnDesignNew">Design my new channel</button><button id="btnRebrand" title="Redesign the channel you are on now">Redesign current channel</button></div>
+      </div>
+      <div id="rbResult"></div>
+      <div class="card hidden" id="wzLink">
+        <h3>3 · Create the channel on YouTube, then link it</h3>
+        <ol class="steps">
+          <li>Create the channel: <a data-link="https://www.youtube.com/channel_switcher">YouTube → Switch account → Create a channel</a>. Use the name and handle above (tap to copy).</li>
+          <li>Google secrets: already set in Settings? If not, add your OAuth client ID and secret there (one time, works for every channel).</li>
+          <li>Press <b>Link my new channel</b> and pick it on Google's screen. The app then applies the banner, description, keywords and playlists, and starts finding the best shorts for the niche.</li>
+        </ol>
+        <div class="row end"><button class="primary" id="btnLinkNew">Link my new channel</button></div>
+      </div>
+    </section>
+
+    <!-- LIBRARY -->
+    <section class="page" id="page-library">
+      <header class="row between"><div><h1>Library</h1><p>Everything you have made. Select shorts to upload or schedule them.</p></div>
+        <button id="btnOpenOut" class="ghost">Open output folder</button></header>
+      <div class="toolbar">
+        <div class="seg small" id="libFilter">
+          <button data-f="all" class="active">All</button><button data-f="progress">In progress</button><button data-f="draft">Ready to post</button><button data-f="failed">Failed</button>
+        </div>
+        <div class="row">
+          <span class="muted" id="selCount">0 selected</span><button class="ghost" id="selAll" title="Select every short ready to post">All</button><button class="ghost" id="selHalf" title="Select the older half (post the rest later)">Half</button><button class="ghost" id="selNone">None</button>
+          <input type="datetime-local" id="libStart" title="First post" />
+          <select id="libPerDay" title="Posts per day"><option value="1">1/day</option><option value="2" selected>2/day</option><option value="3">3/day</option><option value="4">4/day</option></select>
+          <button id="btnSchedule">Schedule</button>
+          <select id="libPrivacy"><option value="public">Public</option><option value="unlisted">Unlisted</option><option value="private">Private</option></select>
+          <button class="primary" id="btnUploadNow">Upload now</button>
+        </div>
+      </div>
+      <div id="jobs" class="jobs"></div>
+    </section>
+
+    <!-- PUBLISHED -->
+    <section class="page" id="page-published">
+      <header><h1>Published</h1><p>Everything on your channel from this app. Each short can only ever be uploaded once, and the same topic or video moment is never posted twice.</p></header>
+      <div class="toolbar"><div class="seg small" id="pubFilter"><button data-f="all" class="active">All</button><button data-f="uploaded">Live</button><button data-f="scheduled">Scheduled</button></div></div>
+      <div id="pubJobs" class="jobs"></div>
+    </section>
+
+    <!-- ANALYTICS -->
+    <section class="page" id="page-analytics">
+      <header class="row between"><div><h1>Analytics</h1><p>How your channel is doing, with estimated Shorts revenue. Numbers come from YouTube; revenue is an estimate from your RPM setting.</p></div>
+        <button class="primary" id="btnAnalytics">Refresh</button></header>
+      <div class="card" id="monCard"><span class="muted small">Loading your progress…</span></div>
+      <div id="anTiles" class="tiles"></div>
+      <div class="card"><div class="row between"><h3>Studio stats <span class="hint">YouTube Analytics: watch time, retention, traffic</span></h3>
+        <div class="row"><select id="stDays" class="w90"><option value="7">7 days</option><option value="28" selected>28 days</option><option value="90">90 days</option><option value="365">1 year</option></select>
+          <label class="row muted small"><input type="checkbox" id="stAdvice" checked /> AI advice</label><button id="btnStudio">Load Studio stats</button></div></div>
+        <div id="stBody" class="muted small">Shows watch time, average % viewed, subscribers gained and where views come from.</div></div>
+      <div class="card"><div class="row between"><h3>Your latest uploads</h3><span class="muted small" id="anNote"></span></div><div id="anTable"></div></div>
+    </section>
+
+    <!-- COMMENTS -->
+    <section class="page" id="page-comments">
+      <header class="row between"><div><h1>Comments</h1><p>The AI drafts replies to new comments. Nothing is posted until you approve it.</p></div>
+        <div class="row"><button id="btnPostAll" class="hidden">Post all drafts</button><button class="primary" id="btnComments">Fetch &amp; draft replies</button></div></header>
+      <div id="commentList"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="page" id="page-settings">
+      <header><h1>Settings</h1><p>Changes save automatically. Keys and your YouTube login stay on this computer.</p></header>
+      <div class="settings">
+        <div class="card">
+          <h3>Default AI</h3>
+          <p class="note">Use an API key, or a subscription you already pay for through its official command-line app (log in to it once).</p>
+          <div id="writerCards" class="writer-cards"></div>
+          <label class="lbl">Model override <span class="hint">optional, e.g. haiku · sonnet · gpt-5 · llama3.2:3b. Empty: Claude uses sonnet</span></label>
+          <input data-setting="writer_model" placeholder="Use the default model" />
+        </div>
+<div class="card">          <h3>Models per job</h3>          <p class="note" style="margin:0 0 6px">Pick which AI and model does each kind of work. Cheaper models (Claude haiku/sonnet, Gemini flash-lite, a small Ollama model) stretch your limits further.</p>          <div id="taskModels"></div>          <datalist id="modelList-claude"></datalist><datalist id="modelList-gemini"></datalist><datalist id="modelList-codex"></datalist><datalist id="modelList-opencode"></datalist><datalist id="modelList-ollama"></datalist>        </div>
+        <div class="card">
+          <h3>YouTube channel</h3>
+          <div class="row between"><div><b id="ytStatus">Not connected</b><div class="muted small" id="ytSub">Needed for uploads, scheduling, live research and comments.</div></div>
+            <div class="row"><button id="btnDisconnect" class="ghost hidden">Disconnect</button><button class="primary" id="btnConnect">Connect YouTube</button></div></div>
+          <div class="grid2">
+            <div><label class="lbl">OAuth client ID</label><input data-setting="google_client_id" placeholder="xxxx.apps.googleusercontent.com" /></div>
+            <div><label class="lbl">OAuth client secret</label><input data-setting="google_client_secret" type="password" /></div>
+          </div>
+          <details><summary>How to get these (5 minutes, one time)</summary>
+            <ol>
+              <li>Open <a data-link="https://console.cloud.google.com/projectcreate">Google Cloud Console</a> and create a project.</li>
+              <li>Enable the <a data-link="https://console.cloud.google.com/apis/library/youtube.googleapis.com">YouTube Data API v3</a>.</li>
+              <li>Set up the <a data-link="https://console.cloud.google.com/auth/branding">OAuth consent screen</a> (External) and add your Google account as a test user.</li>
+              <li><a data-link="https://console.cloud.google.com/auth/clients">Create an OAuth client</a> of type <b>Desktop app</b> and paste its ID and secret here.</li>
+              <li>Uploads from a new, unaudited Google project are locked to private by YouTube. To post public videos, request the free <a data-link="https://support.google.com/youtube/contact/yt_api_form">API audit</a>.</li>
+            </ol>
+          </details>
+        </div>
+        <div class="card">
+          <h3>API keys</h3>
+          <label class="lbl">Gemini <a class="hint" data-link="https://aistudio.google.com/apikey">get a free key</a></label>
+          <input data-setting="gemini_key" type="password" placeholder="For Gemini writer, AI voice and AI images" />
+          <label class="lbl">Pexels <a class="hint" data-link="https://www.pexels.com/api/">get a free key</a></label>
+          <input data-setting="pexels_key" type="password" placeholder="Free stock video, OK for monetized videos" />
+          <label class="lbl">Pixabay <a class="hint" data-link="https://pixabay.com/api/docs/">get a free key</a></label>
+          <input data-setting="pixabay_key" type="password" placeholder="Free stock video, OK for monetized videos" />
+          <label class="lbl">Twitch client ID &amp; secret <a class="hint" data-link="https://dev.twitch.tv/console/apps/create">create a free app</a></label>
+          <div class="grid2"><input data-setting="twitch_client_id" placeholder="Client ID" /><input data-setting="twitch_client_secret" type="password" placeholder="Client secret" /></div>
+        </div>
+        <div class="card">
+          <h3>Voice &amp; sound</h3>
+          <div class="grid2">
+            <div><label class="lbl">Kokoro voice <span class="hint">free, runs on this PC</span></label><div class="row"><select data-setting="kokoro_voice" id="kokoroVoices"></select><button class="ghost btnPreview" data-voice="kokoro" title="Hear it">▶</button></div></div>
+            <div><label class="lbl">Piper voice <span class="hint">lightest, near-instant</span></label><div class="row"><select data-setting="piper_voice" id="piperVoices"></select><button class="ghost btnPreview" data-voice="piper" title="Hear it">▶</button></div></div>
+            <div><label class="lbl">Render videos on</label><select data-setting="gpu_encode"><option value="auto">GPU (NVIDIA NVENC) if available</option><option value="off">CPU only</option></select></div>
+            <div><label class="lbl">Local voices run on</label><select data-setting="kokoro_device"><option value="auto">Auto: GPU if set up, else CPU</option><option value="gpu">GPU only (NVIDIA)</option><option value="cpu">CPU only</option></select></div>
+            <div><label class="lbl">GPU voices <span class="hint" id="gpuState"></span></label><button id="btnGpuSetup">Set up GPU voices (~2.6 GB, one time)</button></div>
+            <div><label class="lbl">Gemini voice</label><select data-setting="gemini_voice">
+              <option>Puck</option><option>Charon</option><option>Kore</option><option>Fenrir</option><option>Aoede</option><option>Zephyr</option><option>Orus</option><option>Leda</option><option>Enceladus</option><option>Sadachbia</option></select></div>
+            <div><label class="lbl">Background music folder <span class="hint">optional</span></label><input data-setting="music_dir" placeholder="C:\Music\royalty-free" /></div>
+          </div>
+          <div class="grid2"><div><label class="lbl">Shorts RPM (US$ per 1,000 views) <span class="hint">for revenue estimates</span></label><input data-setting="rpm" type="number" step="0.01" min="0" /></div>
+            <div><label class="lbl">Engagement comment</label><select data-setting="auto_comment"><option value="true">Post an AI comment on every short</option><option value="false">Off</option></select></div></div>
+          <p class="note">Only put music you have rights to in this folder (e.g. the YouTube Audio Library). A random track plays quietly under the voice.</p>
+        </div>
+<div class="card">          <h3>Look</h3>
+          <div class="grid2" style="margin-bottom:8px"><div><label class="lbl">AI images <span class="hint" id="imgState"></span></label><select data-setting="image_model"><option value="flux">FLUX: local, free, on your GPU</option><option value="gemini">Gemini: needs a paid key</option></select></div>
+            <div><label class="lbl">Local FLUX</label><button id="btnFluxSetup2">Set up FLUX (~10 GB, one time)</button></div></div>          <p class="note" style="margin:0 0 6px">One house style for every short, whichever AI or tool made it: hook banner on top, big pop-in captions.</p>          <div class="grid2">            <div><label class="lbl">Hook banner on top</label><select data-setting="style_hook"><option value="true">On</option><option value="false">Off</option></select></div>            <div><label class="lbl">Caption language <span class="hint">Whisper subtitles for clips</span></label><select data-setting="caption_language"><option value="en">English</option><option value="auto">Auto-detect</option><option value="es">Spanish</option><option value="pt">Portuguese</option><option value="fr">French</option><option value="de">German</option></select></div>            <div><label class="lbl">Banner colour</label><input type="color" data-setting="style_hook_color" /></div>            <div><label class="lbl">Caption accent colour</label><input type="color" data-setting="style_accent" /></div>            <div><label class="lbl">Subscribe call + animated button</label><select data-setting="cta_rate"><option value="0">Never</option><option value="25">1 in 4 shorts</option><option value="33">1 in 3 shorts</option><option value="50">Half of shorts</option><option value="100">Every short</option></select></div>            <div><label class="lbl">Tune it from my stats</label><select data-setting="cta_auto"><option value="true">Yes: adjust daily (retention vs subscribers)</option><option value="false">No: keep my setting</option></select></div>          </div>          <p class="note">Applies to new shorts and to any you Retry. Background music: leave the music folder empty to use the built-in library (Kevin MacLeod, CC BY 4.0; the credit is added to each description automatically).</p>        </div>
+        <div class="card">
+          <h3>Advanced</h3>
+          <div class="grid2">
+            <div><label class="lbl">Gemini text model</label><input data-setting="gemini_text_model" /></div>
+            <div><label class="lbl">Gemini voice model</label><input data-setting="gemini_tts_model" /></div>
+            <div><label class="lbl">Gemini image model</label><input data-setting="gemini_image_model" /></div>
+            <div><label class="lbl">Ollama address</label><input data-setting="ollama_host" /></div>
+            <div><label class="lbl">Milestone confetti</label><select id="confettiPref"><option value="on">Always show</option><option value="system">Follow Windows "reduce motion"</option></select></div>
+          </div>
+          <p class="note" id="outDir"></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ACTIVITY -->
+    <div class="activity" id="activity">
+      <div class="qbar hidden" id="qbar"><div id="qfill"></div></div>
+      <div class="activity-bar" id="activityBar"><span class="spinner hidden" id="spinner"></span><span class="qtext hidden" id="qtext"></span><span id="lastLog">Ready</span><button id="btnCancel" class="danger hidden" title="Stop what is running now">■ Cancel</button><span class="chev">▲</span></div>
+      <pre id="log"></pre>
+    </div>
+  </main>
+
+  <div class="modal hidden" id="modal"><div class="modal-box">
+    <video id="mVideo" controls playsinline></video>
+    <div class="modal-form">
+      <div class="row between"><span id="mStatus" class="badge"></span><button class="ghost" id="mClose">✕</button></div>
+      <label class="lbl">Title</label><input id="mTitle" maxlength="100" />
+      <label class="lbl">Description</label><textarea id="mDesc" rows="6"></textarea>
+      <label class="lbl">Tags <span class="hint">comma separated</span></label><textarea id="mTags" rows="3"></textarea>
+      <p class="note err" id="mError"></p>
+      <div class="row end"><button id="mYoutube" class="ghost hidden">Open on YouTube</button><button class="primary" id="mSave">Save</button></div>
+    </div>
+  </div></div>
+
+  <div class="modal hidden" id="usageModal"><div class="modal-box usage-box"><div class="modal-form">
+    <div class="row between"><h3 style="margin:0">AI usage &amp; what is left</h3><div class="row"><button class="ghost" id="usageRefresh">Refresh</button><button class="ghost" id="usageClose">✕</button></div></div>
+    <div id="usageBody"></div>
+  </div></div></div>
+
+  <div class="modal hidden" id="quickModal"><div class="modal-box quick-box"><div class="modal-form">
+    <div class="row between"><h3 style="margin:0" id="qTitle">⚡ Make 3 shorts now</h3><button class="ghost" id="qClose">✕</button></div>
+    <div id="qStart">
+      <p class="muted">Picks the 3 best topics from what is most popular in this channel's niche right now, then makes them with the right tags, look, music and call to action.</p>
+      <label class="row" style="margin:10px 0"><input type="checkbox" id="qAuto" /><span><b>Auto-upload</b>: publish each one as soon as it is made (skip review)</span></label>
+      <div class="row end"><button class="primary" id="qGo">Make 3 shorts</button></div>
+    </div>
+    <div id="qReview" class="hidden">
+      <p class="muted" id="qNote"></p>
+      <div id="qItems" class="quick-items"></div>
+      <div class="row end"><button class="ghost" id="qLater">Keep as drafts</button><button class="primary" id="qPublishAll">Publish all now</button></div>
+    </div>
+  </div></div></div>
+
+  <div id="toasts"></div>
+  <script src="app.js"></script>
+</body>
+</html>
