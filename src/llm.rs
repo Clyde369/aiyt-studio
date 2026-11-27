@@ -9,6 +9,9 @@ use std::process::{Command, Stdio};
 /// Ask the AI chosen for this job type ("script", "research", "clips", "replies") for a JSON object.
 pub fn generate_json(s: &Settings, task: &str, prompt: &str) -> Result<Value> {
     let raw = generate(s, task, prompt)?;
+    if looks_like_secret(&raw) {
+        bail!("the AI's answer contained something that looks like a key or token, so it was discarded");
+    }
     extract_json(&raw).with_context(|| format!("the AI did not return valid JSON:\n{}", raw.chars().take(1500).collect::<String>()))
 }
 
@@ -273,8 +276,13 @@ const CLI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 /// Killed after 10 minutes so a stuck CLI cannot freeze the app's task queue.
 fn cli(bin: &str, args: &[String], stdin: Option<&str>) -> Result<String> {
     check_cancel()?;
+    // AI CLIs only write text for us. Prompts can carry text from strangers (YouTube titles, comments), so the tools
+    // run from an empty folder, and OpenCode gets a config that denies shell, file edits and web fetches.
+    let sandbox = sandbox_dir()?;
     let spawn = |exe: &str| {
         command(exe)
+            .current_dir(&sandbox)
+            .env("OPENCODE_CONFIG", sandbox.join("opencode.json"))
             .args(args)
             .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
@@ -322,4 +330,34 @@ fn cancel_kills_running_program() {
     CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
     assert_eq!(r.unwrap_err().to_string(), "cancelled");
     assert!(started.elapsed().as_secs() < 5, "took {:?}", started.elapsed());
+}
+
+/// Empty working folder for AI CLIs, with a deny-everything OpenCode config.
+fn sandbox_dir() -> Result<std::path::PathBuf> {
+    let dir = std::env::temp_dir().join("aiyt-ai-sandbox");
+    std::fs::create_dir_all(&dir)?;
+    let cfg = dir.join("opencode.json");
+    if !cfg.exists() {
+        std::fs::write(&cfg, r#"{"$schema":"https://opencode.ai/config.json","permission":{"edit":"deny","bash":"deny","webfetch":"deny"}}"#)?;
+    }
+    Ok(dir)
+}
+
+/// Key/token shapes (Google, OpenAI, Anthropic, GitHub, OAuth refresh tokens, private keys). Last line of defence
+/// before AI text is posted (comment replies) or saved (scripts, descriptions).
+pub fn looks_like_secret(t: &str) -> bool {
+    let markers = ["AIza", "sk-ant-", "sk-proj-", "ghp_", "gho_", "github_pat_", "xoxb-", "-----BEGIN", "\"refresh_token\"", "client_secret"];
+    if markers.iter().any(|m| t.contains(m)) {
+        return true;
+    }
+    // Google OAuth refresh tokens start with "1//" followed by a long run of token characters.
+    t.match_indices("1//").any(|(i, _)| t[i + 3..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').count() >= 30)
+}
+
+#[cfg(test)]
+#[test]
+fn secret_shapes_are_caught() {
+    assert!(looks_like_secret("my key is AIzaSyD-abc123"));
+    assert!(looks_like_secret("token 1//0gAbCdEfGhIjKlMnOpQrStUvWxYz0123456789"));
+    assert!(!looks_like_secret("Thanks for watching! The ISS orbits every 90 minutes. 1//2 of fans agree"));
 }
