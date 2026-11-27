@@ -1452,6 +1452,8 @@ async function loadStories() {
   $('#stParts').value = p.parts || 4;
   $('#stImages').value = p.images || 'local';
   if ($('#stNarrator').options.length) $('#stNarrator').value = p.narrator_voice || 'bm_george';
+  // This channel's story niche (empty until worked out: then Find popular stories reads the channel itself).
+  if (document.activeElement !== $('#stNiche')) $('#stNiche').value = (story.research && story.research.niche) || story.niche || '';
   renderStoryTools();
   if (story.research) renderStoryResearch(story.research);
   renderSeries();
@@ -1504,7 +1506,7 @@ function renderStoryResearch(r) {
   }));
 }
 $('#btnStResearch').onclick = () => task('Finding the most popular stories in your niche…', async () => {
-  renderStoryResearch(await call('story_research'));
+  renderStoryResearch(await call('story_research', { niche: $('#stNiche').value.trim() }));
   log('Story research ready');
 });
 

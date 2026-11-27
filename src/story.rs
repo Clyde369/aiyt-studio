@@ -130,12 +130,43 @@ pub fn last_research() -> Option<Value> {
     fs::read_to_string(dir().join("research.json")).ok().and_then(|x| serde_json::from_str(&x).ok())
 }
 
-/// What is working for story Shorts in this channel's niche right now, and original series ideas inspired by it.
-pub fn research(s: &Settings, log: &dyn Fn(&str)) -> Result<Value> {
-    let niche = if !s.niche_query.trim().is_empty() { s.niche_query.trim().to_string() } else { s.channel_about.chars().take(80).collect() };
-    if niche.trim().is_empty() {
-        bail!("set up this channel first (Channel setup) so the AI knows its story niche");
+/// The niche of the channel the app is on: the saved one, else worked out once from the channel's YouTube
+/// description and uploads, so channels that existed before the app work too. Remembered for the channel.
+fn channel_niche(s: &Settings, log: &dyn Fn(&str)) -> Result<String> {
+    if !s.niche_query.trim().is_empty() {
+        return Ok(s.niche_query.trim().to_string());
     }
+    let mut about = s.channel_about.trim().to_string();
+    if youtube::is_connected() {
+        log("Reading your channel to work out its niche…");
+        if let Ok((title, description)) = youtube::channel_profile(s) {
+            about.push_str(&format!("\nChannel: {title}\n{description}"));
+        }
+        let titles = youtube::my_titles(s).unwrap_or_default();
+        if !titles.is_empty() {
+            about.push_str(&format!("\nRecent uploads:\n{}", titles.into_iter().take(15).collect::<Vec<_>>().join("\n")));
+        }
+    }
+    if about.trim().is_empty() {
+        bail!("type the story niche you want (e.g. home energy comedy), or link this channel to YouTube so the AI can read it");
+    }
+    let v = llm::generate_json(s, "research", &format!(
+        "This describes a YouTube channel:\n{about}\nReturn ONLY JSON {{\"query\": a 2-4 word YouTube search query for the channel's niche, e.g. \"home energy saving\"}}"
+    ))?;
+    let q = v["query"].as_str().unwrap_or("").trim().to_string();
+    if q.is_empty() {
+        bail!("could not work out this channel's niche; type the story niche you want");
+    }
+    let mut saved = Settings::load();
+    saved.niche_query = q.clone();
+    saved.save()?;
+    Ok(q)
+}
+
+/// What is working for story Shorts in a niche right now, and original series ideas inspired by it.
+/// `niche` = typed by the user; "" = this channel's own niche.
+pub fn research(s: &Settings, niche: &str, log: &dyn Fn(&str)) -> Result<Value> {
+    let niche = if niche.trim().is_empty() { channel_niche(s, log)? } else { niche.trim().to_string() };
     let mut videos: Vec<Value> = vec![];
     if youtube::is_connected() {
         for q in [format!("{niche} story"), format!("{niche} animation"), niche.clone()] {
@@ -164,7 +195,7 @@ pub fn research(s: &Settings, log: &dyn Fn(&str)) -> Result<Value> {
          Series this channel already has (do not repeat): {}\n\
          Return ONLY JSON: {{\"insights\": [5 short insights about what works], \"ideas\": [{{\"title\": series title, \"premise\": 2 sentences, \
          \"hook\": the first line of part 1, \"why\": one sentence citing the data, \"parts\": 3-6}}]}}",
-        s.channel_about, if top.is_empty() { "(no live data; use your knowledge)".to_string() } else { top.join("\n") },
+        if s.channel_about.trim().is_empty() { niche.as_str() } else { s.channel_about.as_str() }, if top.is_empty() { "(no live data; use your knowledge)".to_string() } else { top.join("\n") },
         if made.is_empty() { "(none)".to_string() } else { made.join("; ") }
     ))?;
     v["top_videos"] = videos.into_iter().take(12).collect::<Vec<_>>().into();
@@ -368,13 +399,13 @@ pub fn next_parts(s: &Settings, n: usize, log: &dyn Fn(&str)) -> Result<Vec<Stri
                 fresh_ideas += 1;
                 let found = match last_research() {
                     Some(r) => r,
-                    None => research(s, log)?,
+                    None => research(s, "", log)?,
                 };
                 let taken: Vec<String> = list().into_iter().map(|x| x.title.to_lowercase()).collect();
                 let idea = found["ideas"].as_array().into_iter().flatten().find(|i| !taken.contains(&i["title"].as_str().unwrap_or("").to_lowercase())).cloned();
                 let idea = match idea {
                     Some(i) => format!("{}: {}", i["title"].as_str().unwrap_or(""), i["premise"].as_str().unwrap_or("")),
-                    None => research(s, log)?["ideas"][0]["premise"].as_str().unwrap_or("").to_string(),
+                    None => research(s, "", log)?["ideas"][0]["premise"].as_str().unwrap_or("").to_string(),
                 };
                 if idea.trim().is_empty() {
                     bail!("no story ideas yet: open Stories and press Find popular stories");

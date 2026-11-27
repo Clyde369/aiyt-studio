@@ -1074,7 +1074,7 @@ async fn launch_channel(app: AppHandle) -> Res<String> {
         if story {
             // A story channel starts with research into what stories work in its niche, and its first series.
             log("Finding the stories that work in this niche…");
-            let research = story::research(&s, &log)?;
+            let research = story::research(&s, "", &log)?;
             let idea = &research["ideas"][0];
             let se = story::new_series(&s, &format!("{}: {}", idea["title"].as_str().unwrap_or(""), idea["premise"].as_str().unwrap_or("")), &s.story.style)?;
             let _ = std::fs::remove_file(settings::config_dir().join("pending_kit.json"));
@@ -1205,7 +1205,7 @@ async fn apply_brand(description: String, keywords: Vec<String>, banner: bool, p
 fn story_status() -> Value {
     let s = Settings::load();
     json!({
-        "prefs": s.story, "series": story::list(), "research": story::last_research(),
+        "prefs": s.story, "niche": s.niche_query, "series": story::list(), "research": story::last_research(),
         "tools": {"fast": story::fast_ready(), "node": on_path("node"), "animator": tools::givemotion_ready(), "pictures": tools::comfy_ready(), "gemini_key": !s.gemini_key.trim().is_empty()}
     })
 }
@@ -1235,9 +1235,9 @@ async fn setup_story_tools(app: AppHandle, pictures: bool) -> Res<()> {
 
 /// The most popular story Shorts in the channel's niche, what makes them work, and original series ideas.
 #[tauri::command]
-async fn story_research(app: AppHandle) -> Res<Value> {
+async fn story_research(app: AppHandle, niche: Option<String>) -> Res<Value> {
     fresh();
-    blocking(move || story::research(&Settings::load(), &logger(app))).await
+    blocking(move || story::research(&Settings::load(), niche.as_deref().unwrap_or(""), &logger(app))).await
 }
 
 #[tauri::command]
