@@ -373,6 +373,7 @@ function renderResearch(r, niche) {
 async function loadJobs() {
   jobs = await call('list_jobs', {}, { quiet: true }).catch(() => []);
   renderJobs();
+  renderCap();
 }
 const uploadable = (j) => j.video && !j.video_id && !['generating', 'queued'].includes(j.status);
 const canPin = (j) => j.video_id && j.comment_id && j.comment_id !== 'unavailable';
@@ -1578,6 +1579,16 @@ async function checkUpdate() {
   bar.innerHTML = `⬆️ AIYT Studio ${esc(u.latest)} is out (you have ${esc(u.current)}). <a data-link="${esc(u.url)}">Download it</a>`;
   $('#toasts').append(bar);
   setTimeout(() => bar.remove(), 20000);
+}
+
+/* ---------- upload limit status (Library) ---------- */
+async function renderCap() {
+  const u = await call('upload_status', {}, { quiet: true }).catch(() => null);
+  if (!u) return;
+  const capTxt = u.cap ? ` of ~${u.cap}` : '';
+  $('#capInfo').textContent = u.blocked_until > u.now
+    ? `⏸ Daily upload limit reached${u.cap ? ` (~${u.cap}/day)` : ''}: ${u.queued} queued, uploads resume ${fmt(new Date(u.blocked_until * 1000))} · `
+    : `Uploads today: ${u.today}${capTxt}${u.queued ? ` · ${u.queued} queued` : ''} · `;
 }
 
 /* ---------- start ---------- */

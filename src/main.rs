@@ -591,12 +591,35 @@ async fn analytics() -> Res<Value> {
     .await
 }
 
-/// After YouTube says "uploadLimitExceeded", no upload is attempted before this time (Unix seconds).
-static UPLOAD_BLOCKED_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// YouTube's per-channel daily upload cap, as learned from this channel's own history:
+/// {"cap": uploads allowed per rolling 24 h, "blocked_until": Unix seconds}. Lives in the channel's folder.
+fn cap_state() -> Value {
+    std::fs::read_to_string(settings::channel_dir().join("upload_cap.json")).ok().and_then(|x| serde_json::from_str(&x).ok()).unwrap_or(json!({}))
+}
+
+fn blocked_until() -> u64 {
+    cap_state()["blocked_until"].as_u64().unwrap_or(0)
+}
+
+/// Upload times (Unix seconds) of this channel's shorts in the last 24 hours, oldest first.
+fn uploads_last_24h() -> Vec<u64> {
+    let since = youtube::now_secs().saturating_sub(86400);
+    let mut t: Vec<u64> = pipeline::list_jobs().iter().filter_map(|j| j["uploaded_at"].as_u64()).filter(|t| *t >= since).collect();
+    t.sort_unstable();
+    t
+}
+
+/// For the Library: uploads today, the learned cap, and when uploads resume if paused.
+#[tauri::command]
+fn upload_status() -> Value {
+    let c = cap_state();
+    let queued = pipeline::list_jobs().iter().filter(|j| j["pending_upload"] == true && j["video_id"].as_str().unwrap_or("").is_empty()).count();
+    json!({"today": uploads_last_24h().len(), "cap": c["cap"], "blocked_until": blocked_until(), "now": youtube::now_secs(), "queued": queued})
+}
 
 /// Upload shorts that were queued by the daily upload limit (runs from the background loop).
 fn retry_pending_uploads(s: &Settings, log: &dyn Fn(&str)) {
-    if !youtube::is_connected() || youtube::now_secs() < UPLOAD_BLOCKED_UNTIL.load(Ordering::SeqCst) || BUSY.load(Ordering::SeqCst) {
+    if !youtube::is_connected() || youtube::now_secs() < blocked_until() || BUSY.load(Ordering::SeqCst) {
         return;
     }
     for job in pipeline::list_jobs().into_iter().filter(|j| j["pending_upload"] == true && j["video_id"].as_str().unwrap_or("").is_empty()) {
@@ -606,8 +629,8 @@ fn retry_pending_uploads(s: &Settings, log: &dyn Fn(&str)) {
         if let Err(e) = upload_one(s, &item, log) {
             log(&format!("✖ queued upload: {e:#}"));
         }
-        if youtube::now_secs() < UPLOAD_BLOCKED_UNTIL.load(Ordering::SeqCst) {
-            break; // still capped
+        if youtube::now_secs() < blocked_until() {
+            break; // capped again
         }
     }
 }
@@ -659,23 +682,29 @@ fn upload_one(s: &Settings, item: &UploadItem, log: &dyn Fn(&str)) -> anyhow::Re
         log(&format!("  ⏳ {why}"));
         Ok(())
     };
-    let blocked = UPLOAD_BLOCKED_UNTIL.load(Ordering::SeqCst);
+    let blocked = blocked_until();
     if youtube::now_secs() < blocked {
-        return queue_it(&mut st, &format!("Queued: YouTube's daily upload limit is reached; the app retries after {}", youtube::to_rfc3339(blocked)));
+        return queue_it(&mut st, &format!("Queued: this channel's daily upload limit is used up; uploads resume at {} (UTC)", youtube::to_rfc3339(blocked)));
     }
     log(&format!("Uploading “{}”{}…", st.topic, at.as_ref().map(|a| format!(" (scheduled {a})")).unwrap_or_default()));
     let vid = match youtube::upload(s, &pipeline::job_dir(&item.id)?, &privacy, at.as_deref()) {
         Ok(v) => v,
         Err(e) if e.to_string().contains("uploadLimitExceeded") => {
-            // The cap is a rolling 24 hours; try again in 6 hours rather than hammering it (each try costs quota).
-            UPLOAD_BLOCKED_UNTIL.store(youtube::now_secs() + 6 * 3600, Ordering::SeqCst);
-            return queue_it(&mut st, "Queued: your channel hit YouTube's daily upload limit (new or unverified channels get a small one). The app uploads it automatically later; verifying your channel by phone raises the limit");
+            // The cap is a rolling 24 hours: it frees up 24 h after the oldest upload in the window. Learn the cap from
+            // how many went through, and wait exactly that long (fallback 6 h when the history is unknown).
+            let times = uploads_last_24h();
+            let free_at = times.first().map(|t| t + 86400 + 600).unwrap_or(youtube::now_secs() + 6 * 3600);
+            let cap = if times.is_empty() { cap_state()["cap"].clone() } else { json!(times.len()) };
+            let _ = settings::write_atomic(&settings::channel_dir().join("upload_cap.json"), &json!({"cap": cap, "blocked_until": free_at}).to_string());
+            return queue_it(&mut st, &format!("Queued: this channel hit YouTube's daily upload limit{}. It uploads automatically from {} (UTC); verifying the channel by phone raises the limit",
+                cap.as_u64().map(|c| format!(" (~{c} per 24 hours)")).unwrap_or_default(), youtube::to_rfc3339(free_at)));
         }
         Err(e) => return Err(e),
     };
     (st.pending_upload, st.pending_privacy, st.pending_at) = (false, String::new(), String::new());
     st.error.clear();
     st.video_id = vid.clone();
+    st.uploaded_at = youtube::now_secs();
     st.status = if at.is_some() { "scheduled".into() } else { "uploaded".into() };
     st.publish_at = at.unwrap_or_default();
     st.privacy = privacy.clone();
@@ -1210,7 +1239,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_settings, save_settings, app_info, open_link, yt_channel, yt_connect, yt_disconnect, suggest_niches, research,
             generate, retry_job, list_jobs, save_job_meta, delete_job, open_job_folder, upload, autopilot, fetch_comments,
-            reply_comment, skip_comment, find_clips, channel_clips, twitch_clips, make_clips, rebrand, brand_art, apply_brand, cancel_task, usage_summary, list_models, channel_ideas, analytics, preview_voice, kokoro_voices, piper_voices, gpu_status, setup_gpu_voice, trends_now, trend_picks, watch_video, studio_insights, auto_status, auto_run_now, smart_picks, dismiss_pick, check_growth, monetization, published_status, list_channels, switch_channel, pending_kit, niche_finder, launch_channel, quick_batch, flux_status, setup_flux, check_update
+            reply_comment, skip_comment, find_clips, channel_clips, twitch_clips, make_clips, rebrand, brand_art, apply_brand, cancel_task, usage_summary, list_models, channel_ideas, analytics, preview_voice, kokoro_voices, piper_voices, gpu_status, setup_gpu_voice, trends_now, trend_picks, watch_video, studio_insights, auto_status, auto_run_now, smart_picks, dismiss_pick, check_growth, monetization, published_status, list_channels, switch_channel, pending_kit, niche_finder, launch_channel, quick_batch, flux_status, setup_flux, check_update, upload_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running AIYT Studio");

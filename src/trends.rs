@@ -97,6 +97,10 @@ pub fn opportunities(s: &crate::settings::Settings, google: &[Value], youtube: &
         "You are a YouTube Shorts strategist. Think carefully. Pick the trends this channel can ride RIGHT NOW without going off-brand.\n\
          Channel: {channel}\nRising Google searches today:\n{}\nTrending on YouTube today:\n{}\n\
          Top Shorts this month in the channel's own niche (the strongest signal; model these):\n{}\n\
+         EVERY pick must be squarely about the channel's niche: a viewer who subscribed for that niche must instantly see it is for them. \
+         Use a general trend only when it connects naturally and obviously to the niche (e.g. a heatwave → cooling costs for a home-energy channel); \
+         otherwise ignore it. Never make shorts about games, movies, superheroes, sports or celebrities unless that IS the niche. \
+         The niche's own top Shorts are the main source; it is fine if no general trend is used at all. \
          Skip anything tragic, political or that would need copyrighted footage. \
          Return ONLY JSON: {{\"picks\": [{{\"trend\": the trend, \"topic\": a specific short topic with the hook built in, \"why\": one sentence, \
          \"urgency\": \"today\" | \"this week\"}}] (6 picks, best first)}}",

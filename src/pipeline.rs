@@ -38,6 +38,8 @@ pub struct JobState {
     pub pending_at: String,
     /// YouTube channel this short belongs to.
     pub channel_id: String,
+    /// When it went up (Unix seconds); used to work out when YouTube's rolling 24-hour upload cap frees up.
+    pub uploaded_at: u64,
     /// Set for clip jobs: the YouTube (CC BY) / Twitch / Kick source being reworked.
     pub source_url: String,
     pub source_title: String,
