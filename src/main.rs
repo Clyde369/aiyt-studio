@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod auto;
+mod formula;
 mod growth;
 mod ledger;
 mod llm;
@@ -288,6 +289,10 @@ fn run_auto_day(app: &AppHandle, day: i64) -> anyhow::Result<()> {
         // Story channel: the next parts of the current series (a new series starts when one ends).
         story::next_parts(&s, n, &log)?
     } else {
+        // 0) The channel chose to follow its winning formula: its suggestions go first, made exactly that way.
+        let planned = fresh_topics(&formula::auto_topics(n), &log);
+        let mut ids = if planned.is_empty() { vec![] } else { formula::queue(&s, &planned, &log)? };
+        let n = n - ids.len().min(n);
         // 1) A short of yours is blowing up: its follow-up goes first.
         let smart: Vec<Value> = growth::picks().into_iter().filter(|p| p["status"] == "new").take(n).collect();
         let mut topics: Vec<String> = smart.iter().filter_map(|p| p["topic"].as_str().map(String::from)).collect();
@@ -295,7 +300,7 @@ fn run_auto_day(app: &AppHandle, day: i64) -> anyhow::Result<()> {
             let _ = growth::set_status(p["video_id"].as_str().unwrap_or(""), "made");
         }
         // 2) Fill the rest from what is trending in general and in your niche.
-        if topics.len() < n {
+        if n > 0 && topics.len() < n {
             let google = trends::google_trends("US").unwrap_or_default();
             let chart = youtube::trending_chart(&s, "US", "").unwrap_or_default();
             let mut s2 = s.clone();
@@ -304,7 +309,8 @@ fn run_auto_day(app: &AppHandle, day: i64) -> anyhow::Result<()> {
             topics.extend(picks["picks"].as_array().into_iter().flatten().filter_map(|p| p["topic"].as_str().map(String::from)));
         }
         let topics: Vec<String> = fresh_topics(&topics, &log).into_iter().take(n).collect();
-        topics.iter().map(|t| pipeline::create_job(t, &[])).collect::<anyhow::Result<Vec<_>>>()?
+        ids.extend(topics.iter().map(|t| pipeline::create_job(t, &[])).collect::<anyhow::Result<Vec<_>>>()?);
+        ids
     };
     let _ = app.emit("jobs-changed", ());
     let slots = auto::slot_minutes(&plan, ids.len());
@@ -1198,6 +1204,49 @@ async fn apply_brand(description: String, keywords: Vec<String>, banner: bool, p
     .await
 }
 
+// ---------- Winning formula + monetization forecast ----------
+
+#[tauri::command]
+fn formula_get() -> Option<Value> {
+    formula::load()
+}
+
+/// Deep analysis of this channel's best shorts against its weakest: the formula, the evidence, new shorts to make.
+#[tauri::command]
+async fn formula_analyse(app: AppHandle) -> Res<Value> {
+    fresh();
+    blocking(move || formula::analyse(&Settings::load(), &logger(app))).await
+}
+
+/// Makes these topics exactly in the winning formula; each can go up as soon as it is ready.
+#[tauri::command]
+async fn formula_make(app: AppHandle, topics: Vec<String>, auto_upload: bool) -> Res<usize> {
+    blocking(move || {
+        let _busy = Busy::take()?;
+        let (s, log) = (Settings::load(), logger(app.clone()));
+        let ids = formula::queue(&s, &fresh_topics(&topics, &log), &log)?;
+        let _ = app.emit("jobs-changed", ());
+        Ok(run_queue(&app, &s, "script", &ids, &log, |_, id| {
+            if auto_upload {
+                upload_one(&s, &UploadItem { id: id.into(), privacy: "public".into(), publish_at: None }, &log)?;
+            }
+            Ok(())
+        }))
+    })
+    .await
+}
+
+#[tauri::command]
+fn formula_auto(on: bool) -> Res<()> {
+    formula::set_auto(on).map_err(err)
+}
+
+/// When each Partner Program tier is reached (current pace vs posting the formula) and the revenue to expect.
+#[tauri::command]
+async fn forecast() -> Res<Value> {
+    fresh();
+    blocking(|| formula::forecast(&Settings::load())).await
+}
 // ---------- Story channels ----------
 
 /// Everything the Stories page shows: this channel's story settings, its series, the last research and the tools.
@@ -1347,7 +1396,8 @@ fn main() {
             get_settings, save_settings, app_info, open_link, yt_channel, yt_connect, yt_disconnect, suggest_niches, research,
             generate, retry_job, list_jobs, save_job_meta, delete_job, open_job_folder, upload, autopilot, fetch_comments,
             reply_comment, skip_comment, find_clips, channel_clips, twitch_clips, make_clips, rebrand, brand_art, apply_brand, cancel_task, usage_summary, list_models, channel_ideas, analytics, preview_voice, kokoro_voices, piper_voices, gpu_status, setup_gpu_voice, trends_now, trend_picks, watch_video, studio_insights, auto_status, auto_run_now, smart_picks, dismiss_pick, check_growth, monetization, published_status, list_channels, switch_channel, pending_kit, niche_finder, launch_channel, quick_batch, flux_status, setup_flux, check_update, upload_status,
-            story_status, story_prefs, setup_story_tools, story_research, story_new, story_make, story_delete
+            story_status, story_prefs, setup_story_tools, story_research, story_new, story_make, story_delete,
+            formula_get, formula_analyse, formula_make, formula_auto, forecast
         ])
         .build(tauri::generate_context!())
         .expect("error while starting AIYT Studio")

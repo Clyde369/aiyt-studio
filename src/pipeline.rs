@@ -44,6 +44,10 @@ pub struct JobState {
     pub source_url: String,
     pub source_title: String,
     pub source_channel: String,
+    /// This channel's winning formula (from Analytics) that the script must follow exactly; empty = none.
+    pub formula: String,
+    /// Target length for this short (0 = the length in Settings).
+    pub seconds: u32,
 }
 
 /// Job ids come from the UI; only allow plain folder names inside the output folder.
@@ -63,10 +67,15 @@ pub fn save_state(id: &str, st: &JobState) -> Result<()> {
 }
 
 pub fn create_job(topic: &str, extra_tags: &[String]) -> Result<String> {
+    create_job_with(topic, extra_tags, "", 0)
+}
+
+/// A job that follows a formula (and its proven length).
+pub fn create_job_with(topic: &str, extra_tags: &[String], formula: &str, seconds: u32) -> Result<String> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
     let id = format!("{}-{:x}", slug(topic), now.as_millis() % 0xff_ffff);
     fs::create_dir_all(job_dir(&id)?)?;
-    let st = JobState { topic: topic.trim().into(), extra_tags: extra_tags.to_vec(), status: "queued".into(), created: now.as_secs(), channel_id: crate::settings::active_channel(), ..Default::default() };
+    let st = JobState { topic: topic.trim().into(), extra_tags: extra_tags.to_vec(), status: "queued".into(), created: now.as_secs(), channel_id: crate::settings::active_channel(), formula: formula.into(), seconds, ..Default::default() };
     save_state(&id, &st)?;
     Ok(id)
 }
@@ -109,7 +118,7 @@ fn build_steps(s: &Settings, id: &str, st: &JobState, log: &dyn Fn(&str)) -> Res
     let script_path = dir.join("script.json");
     if !script_path.exists() {
         stage(id, 1, 5, &format!("Writing script with {}…", writer_name(&s.pick("script").0)), log);
-        let script = write_script(s, &st.topic, &st.extra_tags)?;
+        let script = write_script(s, &st.topic, &st.extra_tags, &st.formula, st.seconds)?;
         fs::write(&script_path, serde_json::to_string_pretty(&script)?)?;
     }
     let script: Value = serde_json::from_str(&fs::read_to_string(&script_path)?)?;
@@ -247,11 +256,20 @@ fn pick_moments(s: &Settings, id: &str, st: &JobState, group: &str, parts: u32, 
         format!("These parts were ALREADY used for other shorts. Pick only fresh moments that do not overlap them: {}\n", list.join(", "))
     };
     stage(id, 2, 7, &format!("AI is picking the {} most viral moment{}…", parts, if parts > 1 { "s" } else { "" }), log);
+    let formula = if st.formula.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "This channel's proven winning formula, taken from its best-performing shorts. Pick the moments that fit it best and write the \
+             title, hook, intro and thumbnail text EXACTLY in its patterns:\n{}\n",
+            st.formula.trim()
+        )
+    };
     let prompt = format!(
         "You turn videos into viral YouTube Shorts with an original twist (new context, commentary, captions), \
          so the result is transformative and not a plain re-upload.\nSource: \"{src_title}\" by {src_channel} ({total:.0} seconds long).\n\
          Timestamped transcript (seconds):\n{}\n\
-         {avoid}Pick the {parts} most engaging, self-contained, NON-OVERLAPPING moments, each 20-55 seconds long and starting strong, best first. \
+         {formula}{avoid}Pick the {parts} most engaging, self-contained, NON-OVERLAPPING moments, each 20-55 seconds long and starting strong, best first. \
          Return ONLY JSON: {{\"moments\": [{{\"start\": seconds, \"end\": seconds, \"hook\": on-screen headline, max 7 words, adds context or a question, \
          \"intro\": one punchy sentence, max 15 words, spoken over the first seconds to set up why this moment matters, \
          \"title\": max 70 characters, \"description\": 2 sentences then 3-5 hashtags including #shorts, \"tags\": [10-15 tags], \
@@ -407,11 +425,12 @@ fn writer_name(w: &str) -> &str {
     }
 }
 
-fn write_script(s: &Settings, topic: &str, extra_tags: &[String]) -> Result<Value> {
-    let seconds = s.seconds.clamp(15, 170);
+fn write_script(s: &Settings, topic: &str, extra_tags: &[String], formula: &str, seconds: u32) -> Result<Value> {
+    let seconds = if seconds > 0 { seconds } else { s.seconds }.clamp(15, 170);
     let words = seconds * 5 / 2; // ~2.5 spoken words per second
     let tag_hint = if extra_tags.is_empty() { String::new() } else { format!("Proven tags in this niche (reuse the relevant ones): {}\n", extra_tags.join(", ")) };
     let channel = if s.channel_about.trim().is_empty() { String::new() } else { format!("The channel: {}\nMatch its niche, audience and tone.\n", s.channel_about.trim()) };
+    let formula = if formula.trim().is_empty() { String::new() } else { format!("This channel's proven winning formula, taken from its best-performing shorts. Follow it EXACTLY (same title pattern, hook style, beat structure, pacing, tone and visuals); only the topic changes:\n{}\n", formula.trim()) };
     // Only some shorts ask for the subscribe (rate in Settings, optionally auto-tuned); the rest end on a comment question.
     let roll = std::hash::BuildHasher::hash_one(&std::collections::hash_map::RandomState::new(), topic) % 100;
     let cta = (roll as u32) < s.cta_rate.min(100);
@@ -425,7 +444,7 @@ fn write_script(s: &Settings, topic: &str, extra_tags: &[String]) -> Result<Valu
     let cta_key = if cta { "\n\"cta_line\": the exact subscribe/follow sentence you used in the narration" } else { "" };
     let prompt = format!(
         "You write viral YouTube Shorts scripts for a faceless channel. Topic: {topic}\n{channel}\
-         Write a {seconds}-second vertical short with about {words} words of narration.\n\
+         {formula}Write a {seconds}-second vertical short with about {words} words of narration.\n\
          First sentence is a scroll-stopping hook. Short punchy sentences. Surprising, accurate facts, no filler. \
          {ending}{tag_hint}\
          Return ONLY a JSON object with these keys:\n\

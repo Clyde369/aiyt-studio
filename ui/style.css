@@ -222,3 +222,11 @@ nav button.hot::after { content: "🔥"; margin-left: auto; font-size: 12px; }
 .series .parts { margin: 10px 0 0; padding-left: 22px; display: grid; gap: 8px; }
 .series .parts .badge { margin-right: 6px; }
 #stResearch ul { margin: 6px 0 12px; padding-left: 20px; }
+
+.fc { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+.fc th, .fc td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #ffffff10; vertical-align: top; }
+.fc.formula td:first-child { width: 130px; }
+.sugs { display: grid; gap: 8px; }
+.sug { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 12px; background: #ffffff08; cursor: pointer; }
+.sug > div { flex: 1; }
+.sug.used { opacity: .5; }

@@ -157,7 +157,11 @@ function show(page) {
   $$('.page').forEach((p) => p.classList.toggle('active', p.id === 'page-' + page));
   if (page === 'library' || page === 'published') loadJobs();
   if (page === 'published') loadYtState();
-  if (page === 'analytics') loadLive().then(renderMonetization);
+  if (page === 'analytics') {
+    loadLive().then(renderMonetization);
+    loadForecast();
+    loadFormula();
+  }
   if (page === 'stories') loadStories();
 }
 $$('nav button').forEach((b) => (b.onclick = () => show(b.dataset.page)));
@@ -1030,6 +1034,83 @@ $('#liveStats').onclick = () => loadLive().then(() => toast('Live stats refreshe
 setInterval(loadLive, 180000);
 document.addEventListener('visibilitychange', () => !document.hidden && loadLive());
 
+/* ---------- monetization forecast + winning formula (Analytics page) ---------- */
+let fc = null, fcLoading = false;
+async function loadForecast() {
+  if (!info.connected || fcLoading) return;
+  fcLoading = true;
+  fc = await call('forecast', {}, { quiet: true }).catch((e) => ({ error: String(e) }));
+  fcLoading = false;
+  renderMonetization();
+}
+function whenText(d) {
+  if (d == null) return 'not within 2 years';
+  if (d === 0) return 'already there ✓';
+  return `${new Date(Date.now() + d * 864e5).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })} · in ${d} days`;
+}
+function forecastHtml() {
+  if (!fc) return '<p class="note">Working out your forecast…</p>';
+  if (fc.error) return `<p class="note err">Forecast unavailable: ${esc(fc.error)}</p>`;
+  const sc = arr(fc.scenarios), tiers = arr(sc[0] && sc[0].tiers);
+  return `<h4 style="margin:16px 0 6px">📈 Forecast</h4>
+    <div class="muted small">From ${esc(fc.basis)}: about <b>${num(fc.views_per_day)}</b> views and <b>${esc(fc.subs_per_day)}</b> subscribers a day.
+      At your RPM (${money(Number(fc.rpm || 0))} per 1,000 views) that pace would earn about <b>${money(Number(fc.monthly_revenue_now || 0))}/month</b> once monetized.</div>
+    <table class="fc"><tr><th></th>${sc.map((s) => `<th>${esc(s.name)}${s.per_short ? `<div class="muted small">~${num(s.per_short)} views per short, ${num(s.views_per_day)}/day</div>` : ''}</th>`).join('')}</tr>
+    ${tiers.map((t, i) => `<tr><td><b>${esc(t.name)}</b><div class="muted small">needs ~${num(t.views_needed_per_day)} Shorts views a day (90-day total)</div></td>${sc.map((s) => {
+      const x = arr(s.tiers)[i] || {};
+      return `<td>${esc(whenText(x.eta_days))}${x.monthly_revenue != null && t.name.includes('Full') ? `<div class="muted small">then about ${money(Number(x.monthly_revenue || 0))}/month</div>` : ''}</td>`;
+    }).join('')}</tr>`).join('')}</table>
+    ${sc.length < 2 ? '<p class="note">Analyse your best shorts below to see the forecast if you post your winning formula every day.</p>' : '<p class="note">Formula scenario: each new short gets the views of your typical top short, ramping up over two weeks. Estimates, not promises.</p>'}`;
+}
+
+let formula = null;
+function renderFormula() {
+  const f = formula;
+  if (!f) return;
+  const g = f.formula || {}, row = (k, v) => (v ? `<tr><td class="muted">${k}</td><td>${esc(Array.isArray(v) ? v.join(' → ') : v)}</td></tr>` : '');
+  const sug = arr(f.suggestions);
+  $('#formulaBody').innerHTML = `<p style="color:var(--text)">${esc(f.summary)}</p>
+    <h4 style="margin:12px 0 6px">${esc(g.name || 'Your formula')}</h4>
+    <table class="fc formula">${row('Title', g.title_pattern)}${row('Opening line', g.hook)}${row('Structure', arr(g.structure))}${row('Length', g.length_seconds ? `${g.length_seconds} seconds` : '')}
+      ${row('Pacing', g.pacing)}${row('Tone', g.tone)}${row('Visuals', g.visuals)}${row('Thumbnail text', g.thumbnail_text)}${row('Winning topics', arr(g.topics).join(', '))}${row('Avoid', arr(g.avoid).join('; '))}</table>
+    <details><summary>Why: what the numbers show (${num(f.shorts)} shorts compared)</summary><ul>${arr(f.evidence).map((e) => `<li>${esc(e)}</li>`).join('')}</ul>
+      ${f.posting ? `<p>${esc(f.posting)}</p>` : ''}<p>Your top shorts: ${arr(f.top).map((t) => `${esc(t.title)} (${num(t.per_day)}/day${t.avg_view_pct ? `, watched ${Math.round(t.avg_view_pct)}%` : ''})`).join(' · ')}</p></details>
+    <h4 style="margin:14px 0 6px">Make more exactly like this</h4>
+    ${arr(f.top_visuals).filter((v) => v === 'clip from another video').length * 2 > arr(f.top_visuals).length ? '<p class="note" style="margin:0 0 8px">Your winners are clips of other videos, so each new short is made the same way: the app finds the most-viewed fresh Creative Commons video for the topic and clips it in your formula.</p>' : ''}
+    <div class="sugs">${sug.map((x, i) => `<label class="sug ${x.used ? 'used' : ''}"><input type="checkbox" data-sug="${i}" ${x.used ? '' : 'checked'}>
+      <div><b>${esc(x.title || x.topic)}</b><div class="muted small">“${esc(x.hook)}” · ${esc(x.why)}</div></div>
+      <span class="badge good">${num(x.predicted_views && x.predicted_views.low)}–${num(x.predicted_views && x.predicted_views.high)} views</span></label>`).join('')}</div>
+    <div class="row between wrap" style="margin-top:10px">
+      <div class="row wrap"><label class="row small"><input type="checkbox" id="fmUpload"> Upload each as soon as it is ready</label>
+        <label class="row small"><input type="checkbox" id="fmAuto" ${f.use_for_auto ? 'checked' : ''}> Autopilot follows this formula</label></div>
+      <button class="primary" id="btnFormulaMake">Make the ticked shorts</button></div>
+    <p class="note">Analysed ${esc(new Date((f.analysed_at || 0) * 1000).toLocaleString())}. Re-analyse after a few new uploads: the formula improves as you post.</p>`;
+  $('#fmAuto').onchange = (e) => call('formula_auto', { on: e.target.checked }).then(() => toast(e.target.checked ? 'Autopilot will make the formula’s shorts first' : 'Autopilot back to trend picks'));
+  $('#btnFormulaMake').onclick = () => {
+    const topics = $$('#formulaBody [data-sug]:checked').map((c) => sug[c.dataset.sug].topic).filter(Boolean);
+    if (!topics.length) return toast('Tick at least one short to make', true);
+    task(`Making ${topics.length} short(s) with your winning formula…`, async () => {
+      const made = await call('formula_make', { topics, autoUpload: $('#fmUpload').checked });
+      toast(`${made} short(s) made with your formula. Review them in the Library.`);
+      formula = await call('formula_get');
+      renderFormula();
+    });
+  };
+}
+$('#btnFormula').onclick = () => {
+  if (!info.connected) return toast('Connect YouTube in Settings first', true);
+  task('Analysing your best shorts…', async () => {
+    formula = await call('formula_analyse');
+    renderFormula();
+    loadForecast();
+    log('Winning formula ready');
+  });
+};
+async function loadFormula() {
+  formula = await call('formula_get', {}, { quiet: true }).catch(() => null);
+  renderFormula();
+}
+
 /* ---------- road to monetization (Analytics page) ---------- */
 function renderMonetization() {
   const m = mon;
@@ -1050,7 +1131,8 @@ function renderMonetization() {
         ${m.exact ? `<div class="muted small">or ${num(m.watch_hours_365)} / ${num(t.watch_hours)} long-form watch hours (12 months)</div>` : ''}
         ${t.uploads ? `<div class="muted small">${m.uploads_90 >= t.uploads ? '✓' : '○'} ${m.uploads_90}/${t.uploads} public uploads in the last 90 days</div>` : ''}</div>`;
     }).join('')}</div>
-    <p class="note">Growth rates come from the app's daily snapshots (${m.history_days} day${m.history_days === 1 ? '' : 's'} so far), so the estimates sharpen over time. YouTube's thresholds can change and vary by country: check YouTube Studio → Earn.</p>`;
+    ${forecastHtml()}
+    <p class="note">YouTube's thresholds can change and vary by country: check YouTube Studio → Earn.</p>`;
 }
 
 /* ---------- Kokoro voices + voice preview ---------- */

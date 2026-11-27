@@ -656,6 +656,15 @@ pub fn video_comments(s: &Settings, video_id: &str, max: u32) -> Result<Vec<Stri
     Ok(v["items"].as_array().into_iter().flatten().filter_map(|t| t["snippet"]["topLevelComment"]["snippet"]["textDisplay"].as_str().map(|c| format!("- {}", c.chars().take(200).collect::<String>()))).collect())
 }
 
+/// Views and subscribers gained per day over the last `days` days (YouTube Analytics), oldest first.
+pub fn daily_stats(s: &Settings, days: u64) -> Result<Vec<Value>> {
+    let end = now_secs() - 86400; // Analytics data lags ~1-2 days
+    let (a, b) = (rfc3339(end - days * 86400)[..10].to_string(), rfc3339(end)[..10].to_string());
+    let mut rows = analytics_rows(s, &a, &b, "views,subscribersGained", "day")?;
+    rows.sort_by(|x, y| x["day"].as_str().cmp(&y["day"].as_str()));
+    Ok(rows)
+}
+
 /// One YouTube Analytics API report as row objects (needs the yt-analytics.readonly permission).
 fn analytics_rows(s: &Settings, start: &str, end: &str, metrics: &str, dims: &str) -> Result<Vec<Value>> {
     let mut r = ureq::get("https://youtubeanalytics.googleapis.com/v2/reports")
