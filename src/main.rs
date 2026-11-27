@@ -67,6 +67,12 @@ async fn monetization() -> Res<Value> {
     blocking(|| youtube::monetization(&Settings::load())).await
 }
 
+/// Sidebar numbers, refreshed every minute while the app is on screen (2 quota units).
+#[tauri::command]
+async fn live_stats() -> Res<Value> {
+    blocking(|| youtube::live_stats(&Settings::load())).await
+}
+
 /// Cancel button: stops the running task right away (kills ffmpeg, yt-dlp or the AI app mid-step).
 #[tauri::command]
 fn cancel_task() {
@@ -1397,7 +1403,7 @@ fn main() {
             generate, retry_job, list_jobs, save_job_meta, delete_job, open_job_folder, upload, autopilot, fetch_comments,
             reply_comment, skip_comment, find_clips, channel_clips, twitch_clips, make_clips, rebrand, brand_art, apply_brand, cancel_task, usage_summary, list_models, channel_ideas, analytics, preview_voice, kokoro_voices, piper_voices, gpu_status, setup_gpu_voice, trends_now, trend_picks, watch_video, studio_insights, auto_status, auto_run_now, smart_picks, dismiss_pick, check_growth, monetization, published_status, list_channels, switch_channel, pending_kit, niche_finder, launch_channel, quick_batch, flux_status, setup_flux, check_update, upload_status,
             story_status, story_prefs, setup_story_tools, story_research, story_new, story_make, story_delete,
-            formula_get, formula_analyse, formula_make, formula_auto, forecast
+            formula_get, formula_analyse, formula_make, formula_auto, forecast, live_stats
         ])
         .build(tauri::generate_context!())
         .expect("error while starting AIYT Studio")

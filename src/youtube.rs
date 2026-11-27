@@ -533,6 +533,46 @@ pub fn post_comment(s: &Settings, video_id: &str, text: &str) -> Result<String> 
     Ok(v["id"].as_str().unwrap_or_default().to_string())
 }
 
+/// Subscribers, views and likes right now, cheaply enough to refresh every minute: 2 quota units (the list of
+/// uploads is cached for 10 minutes). Channel totals lag behind per-video counts, so views use whichever is higher.
+pub fn live_stats(s: &Settings) -> Result<Value> {
+    static UPLOADS: std::sync::Mutex<(String, u64, Vec<String>)> = std::sync::Mutex::new((String::new(), 0, Vec::new()));
+    let ch = get(s, "channels", &[("part", "statistics,contentDetails"), ("mine", "true")])?;
+    let c = &ch["items"][0];
+    let num = |v: &Value| v.as_str().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+    let channel = c["id"].as_str().unwrap_or("").to_string();
+    let now = now_secs();
+    let ids = {
+        let cached = UPLOADS.lock().unwrap().clone();
+        if cached.0 == channel && now.saturating_sub(cached.1) < 600 {
+            cached.2
+        } else {
+            let ids: Vec<String> = match c["contentDetails"]["relatedPlaylists"]["uploads"].as_str() {
+                Some(pl) => get(s, "playlistItems", &[("part", "contentDetails"), ("playlistId", pl), ("maxResults", "50")])?["items"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|i| i["contentDetails"]["videoId"].as_str().map(String::from))
+                    .collect(),
+                None => vec![],
+            };
+            *UPLOADS.lock().unwrap() = (channel, now, ids.clone());
+            ids
+        }
+    };
+    let (mut views, mut likes) = (0u64, 0u64);
+    if !ids.is_empty() {
+        let v = get(s, "videos", &[("part", "statistics"), ("id", &ids.join(","))])?;
+        for item in v["items"].as_array().into_iter().flatten() {
+            views += num(&item["statistics"]["viewCount"]);
+            likes += num(&item["statistics"]["likeCount"]);
+        }
+    }
+    let st = &c["statistics"];
+    let subs = (!st["hiddenSubscriberCount"].as_bool().unwrap_or(false)).then(|| num(&st["subscriberCount"]));
+    Ok(json!({"subs": subs, "views": views.max(num(&st["viewCount"])), "likes": likes, "at": now}))
+}
+
 /// Channel totals, the latest 50 uploads with their stats, and a daily history of subs/views (kept locally).
 pub fn analytics(s: &Settings) -> Result<Value> {
     let ch = get(s, "channels", &[("part", "snippet,statistics,contentDetails"), ("mine", "true")])?;
@@ -818,4 +858,17 @@ pub fn create_playlist(s: &Settings, title: &str, description: &str) -> Result<S
     let body = json!({"snippet": {"title": title.chars().take(150).collect::<String>(), "description": description.chars().take(5000).collect::<String>()}, "status": {"privacyStatus": "public"}});
     let v = send(s, "POST", &format!("{API}/playlists?part=snippet,status"), &body)?;
     Ok(v["id"].as_str().unwrap_or_default().to_string())
+}
+
+/// Live sidebar numbers for the active channel: `cargo test live_stats_live -- --ignored --nocapture`
+#[cfg(test)]
+#[test]
+#[ignore]
+fn live_stats_live() {
+    let _ = crate::settings::CONFIG_DIR.set(std::path::PathBuf::from(std::env::var("APPDATA").unwrap()).join("com.aiyt.studio"));
+    let s = Settings::load();
+    let t = std::time::Instant::now();
+    println!("{} in {:.1}s", live_stats(&s).unwrap(), t.elapsed().as_secs_f64());
+    let t = std::time::Instant::now();
+    println!("{} in {:.1}s (cached upload list)", live_stats(&s).unwrap(), t.elapsed().as_secs_f64());
 }

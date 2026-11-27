@@ -230,3 +230,5 @@ nav button.hot::after { content: "🔥"; margin-left: auto; font-size: 12px; }
 .sug { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 12px; background: #ffffff08; cursor: pointer; }
 .sug > div { flex: 1; }
 .sug.used { opacity: .5; }
+
+.live-age { flex-basis: 100%; display: block; font-size: 10px; color: var(--muted); opacity: .8; margin-top: 4px; }

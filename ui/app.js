@@ -158,7 +158,7 @@ function show(page) {
   if (page === 'library' || page === 'published') loadJobs();
   if (page === 'published') loadYtState();
   if (page === 'analytics') {
-    loadLive().then(renderMonetization);
+    loadMon().then(renderMonetization);
     loadForecast();
     loadFormula();
   }
@@ -1002,13 +1002,14 @@ function tierProgress(m, t) {
 const eta = (left, perDay) => (left <= 0 ? 'reached ✓' : perDay > 0 ? `≈ ${fmtDays(left / perDay)} at your current pace` : 'needs a few days of data');
 const fmtDays = (d) => (d < 1 ? 'under a day' : d < 60 ? `${Math.ceil(d)} days` : d < 730 ? `${Math.round(d / 30)} months` : `${(d / 365).toFixed(1)} years`);
 
+// Sidebar numbers: a cheap call (2 quota units) every minute while the app is on screen.
+let liveAt = 0, monAt = 0;
 async function loadLive() {
   if (!info.connected || document.hidden) return $('#liveStats').classList.toggle('hidden', !info.connected);
-  const m = await call('monetization', {}, { quiet: true }).catch(() => null);
+  const m = await call('live_stats', {}, { quiet: true }).catch(() => null);
   if (!m) return;
-  mon = m;
-  const views = Math.max(m.views || 0, 0);
-  const stats = { subs: m.subs, views, likes: m.likes };
+  // YouTube sometimes answers from a slightly older cache: never let views jump backwards.
+  const stats = { subs: m.subs, views: Math.max(m.views || 0, (live && live.views) || 0), likes: m.likes };
   const bump = (el, now, before) => {
     el.textContent = now == null ? 'Hidden' : Number(now).toLocaleString();
     if (before != null && now > before) {
@@ -1020,18 +1021,35 @@ async function loadLive() {
   bump($('#liveViews'), stats.views, live?.views);
   bump($('#liveLikes'), stats.likes, live?.likes);
   live = stats;
+  liveAt = Date.now();
+  updateLiveAge();
   checkMilestones(stats);
+  $('#liveStats').classList.remove('hidden');
+  if (Date.now() - monAt > 600000) loadMon();
+}
+// Partner Program progress: the heavier report, every 10 minutes (and whenever the Analytics page opens).
+async function loadMon() {
+  if (!info.connected) return;
+  const m = await call('monetization', {}, { quiet: true }).catch(() => null);
+  if (!m) return;
+  mon = m;
+  monAt = Date.now();
   const first = arr(m.tiers)[0];
   if (first) {
     const p = tierProgress(m, first);
     $('#liveMon').innerHTML = `<div class="u-top"><span>Monetization</span><span>${(p.all * 100).toFixed(p.all < 0.01 ? 2 : p.all < 0.1 ? 1 : 0)}%</span></div><div class="meter"><i style="width:${Math.max(1, p.all * 100)}%"></i></div>`;
   }
-  $('#liveStats').classList.remove('hidden');
   if ($('#page-analytics').classList.contains('active')) renderMonetization();
 }
-$('#liveStats').onclick = () => loadLive().then(() => toast('Live stats refreshed'));
-// Every 3 minutes while the app is on screen, and on returning to it.
-setInterval(loadLive, 180000);
+function updateLiveAge() {
+  if (!liveAt) return;
+  const s = Math.round((Date.now() - liveAt) / 1000);
+  $('#liveAge').textContent = `updated ${s < 60 ? 'just now' : `${Math.round(s / 60)} min ago`} · YouTube's public numbers trail Studio by a few minutes`;
+}
+$('#liveStats').onclick = () => Promise.all([loadLive(), loadMon()]).then(() => toast('Live stats refreshed'));
+// Every minute while the app is on screen, and on returning to it.
+setInterval(loadLive, 60000);
+setInterval(updateLiveAge, 15000);
 document.addEventListener('visibilitychange', () => !document.hidden && loadLive());
 
 /* ---------- monetization forecast + winning formula (Analytics page) ---------- */
