@@ -268,7 +268,8 @@ fn write_part(s: &Settings, se: &Series, n: u32) -> Result<Value> {
          \"mood\": music mood: epic | mysterious | tense | uplifting | calm | playful, \"comment\": a first comment asking viewers what happens next, \
          \"summary\": 2 sentences of what happened in this part, \"cliffhanger\": the open question it ends on, \
          \"scenes\": [{{ {scene_fields} \"camera\": one of {}, \"sfx\": one of {}, \
-         \"lines\": [{{\"speaker\": \"narrator\" or a character name, \"text\": spoken words, \"mood\": one of {}}}] }}]}}",
+         \"lines\": [{{\"speaker\": \"narrator\" or a character name, \"text\": spoken words, \"mood\": the speaker's emotion: one of {} \
+         (\"dead\" ONLY when that character is knocked out, broken or switched off for good; a dry or deadpan line is \"neutral\" or \"smug\")}}] }}]}}",
         se.planned, se.title, se.premise, cast.join("\n"), if so_far.is_empty() { "(this is the first part)".to_string() } else { so_far.join("\n") },
         CAMERAS.join(" | "), SFX.join(" | "), MOODS.join(" | ")
     );
