@@ -34,7 +34,7 @@ function toast(msg, isErr) {
 
 // Making/uploading shorts uses the CPU, GPU and your upload quota, so only one of those runs at a time.
 // Everything else (research, trends, analytics, downloads, previews…) runs alongside.
-const HEAVY = new Set(['generate', 'autopilot', 'upload', 'make_clips', 'retry_job', 'auto_run_now']);
+const HEAVY = new Set(['generate', 'autopilot', 'upload', 'make_clips', 'retry_job', 'auto_run_now', 'story_make']);
 let heavyRunning = 0;
 async function call(cmd, args = {}, { quiet } = {}) {
   const heavy = HEAVY.has(cmd);
@@ -158,6 +158,7 @@ function show(page) {
   if (page === 'library' || page === 'published') loadJobs();
   if (page === 'published') loadYtState();
   if (page === 'analytics') loadLive().then(renderMonetization);
+  if (page === 'stories') loadStories();
 }
 $$('nav button').forEach((b) => (b.onclick = () => show(b.dataset.page)));
 $('#channel').onclick = () => show('settings');
@@ -1059,6 +1060,8 @@ async function loadKokoroVoices() {
   const label = (v) => `${v.split('_')[1].replace(/^./, (c) => c.toUpperCase())} · ${VOICE_KIND[v.slice(0, 2)] || ''}${v === 'af_heart' ? ' (best)' : ''}`;
   $('#kokoroVoices').innerHTML = list.map((v) => `<option value="${esc(v)}">${esc(label(v))}</option>`).join('');
   $('#kokoroVoices').value = settings.kokoro_voice || 'af_heart';
+  $('#stNarrator').innerHTML = $('#kokoroVoices').innerHTML;
+  $('#stNarrator').value = (story.prefs && story.prefs.narrator_voice) || 'bm_george';
 }
 let previewAudio = null;
 $$('.btnPreview').forEach((b) => (b.onclick = () => task('Making a voice preview (the first Kokoro run downloads it once)…', async () => {
@@ -1434,6 +1437,133 @@ function showSetupPrompt() {
   };
 }
 
+/* ---------- stories ---------- */
+let story = { prefs: {}, series: [], tools: {} };
+async function loadStories() {
+  story = await call('story_status', {}, { quiet: true }).catch(() => story);
+  const p = story.prefs || {};
+  $('#stEnabled').value = String(!!p.enabled);
+  const fastOpt = $('#stStyle option[value="fast"]'), fastOk = !!(story.tools || {}).fast;
+  fastOpt.disabled = !fastOk;
+  fastOpt.textContent = fastOk ? 'Fast: drawn with code' : 'Fast: drawn with code (next update)';
+  $('#stStyle').value = fastOk ? p.style || 'fast' : 'slow';
+  $('#stSecs').value = p.seconds || 40;
+  $('#stSecsOut').textContent = `${$('#stSecs').value}s`;
+  $('#stParts').value = p.parts || 4;
+  $('#stImages').value = p.images || 'local';
+  if ($('#stNarrator').options.length) $('#stNarrator').value = p.narrator_voice || 'bm_george';
+  renderStoryTools();
+  if (story.research) renderStoryResearch(story.research);
+  renderSeries();
+}
+function storyPrefs() {
+  return { enabled: $('#stEnabled').value === 'true', style: $('#stStyle').value, seconds: +$('#stSecs').value, images: $('#stImages').value,
+    narrator_voice: $('#stNarrator').value || 'bm_george', parts: Math.max(1, Math.min(12, +$('#stParts').value || 4)) };
+}
+async function saveStoryPrefs() {
+  $('#stSecsOut').textContent = `${$('#stSecs').value}s`;
+  await call('story_prefs', { prefs: storyPrefs() });
+  story.prefs = storyPrefs();
+  renderStoryTools();
+}
+['#stEnabled', '#stStyle', '#stSecs', '#stParts', '#stImages', '#stNarrator'].forEach((s) => ($(s).onchange = saveStoryPrefs));
+$('#stSecs').oninput = () => ($('#stSecsOut').textContent = `${$('#stSecs').value}s`);
+
+function renderStoryTools() {
+  const t = story.tools || {}, slowLocal = $('#stStyle').value === 'slow' && $('#stImages').value === 'local';
+  $('#stStyleNote').textContent = $('#stStyle').value === 'fast'
+    ? 'Fast: characters and places are drawn with code. About 1-2 minutes a part, no picture AI needed.'
+    : `Slow: one AI picture per scene (${$('#stImages').value === 'local' ? 'about 9 seconds each on your GPU' : 'Gemini, paid key'}). About 3-4 minutes a part.`;
+  let html = '';
+  if (!t.node) html = 'Story videos are animated with GiveMotion, which needs <b>Node.js</b>. Install it (<code>winget install OpenJS.NodeJS.LTS</code>), then restart AIYT Studio.';
+  else if (!t.animator || (slowLocal && !t.pictures)) {
+    const parts = [!t.animator && 'the story animator (~150 MB)', slowLocal && !t.pictures && 'local pictures for the Slow style (~8.5 GB)'].filter(Boolean);
+    html = `One-time setup: ${parts.join(' and ')}. <button class="primary" id="btnStSetup">Set up now</button>`;
+  }
+  $('#stSetup').innerHTML = html ? `<div class="card smart"><div class="small">${html}</div></div>` : '';
+  if ($('#btnStSetup')) $('#btnStSetup').onclick = () => {
+    toast('Setting up the story tools in the background. You can keep working; progress is in the activity bar.');
+    task('Setting up the story tools…', async () => {
+      await call('setup_story_tools', { pictures: slowLocal && !t.pictures });
+      toast('Story tools ready');
+      loadStories();
+    });
+  };
+}
+
+function renderStoryResearch(r) {
+  const ideas = arr(r.ideas);
+  $('#stResearch').innerHTML = `${arr(r.insights).length ? `<b>What works now${r.niche ? ` in ${esc(r.niche)}` : ''}</b><ul>${arr(r.insights).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+    <div class="niche-grid">${ideas.map((i, k) => `<div class="niche"><b>${esc(i.title)}</b><p>${esc(i.premise)}</p>
+      <p class="muted small">“${esc(i.hook)}”</p><p class="muted small">${esc(i.why)} · ${num(i.parts)} parts</p>
+      <button data-idea="${k}">Start this series</button></div>`).join('')}</div>
+    ${arr(r.top_videos).length ? `<details><summary>The most-viewed stories it studied</summary><ul>${arr(r.top_videos).map((v) => `<li>${esc(v.title)} · ${num(v.views)} views</li>`).join('')}</ul></details>` : ''}`;
+  $$('#stResearch [data-idea]').forEach((b) => (b.onclick = () => {
+    const i = ideas[b.dataset.idea];
+    newSeries(`${i.title}: ${i.premise} First line: ${i.hook}`);
+  }));
+}
+$('#btnStResearch').onclick = () => task('Finding the most popular stories in your niche…', async () => {
+  renderStoryResearch(await call('story_research'));
+  log('Story research ready');
+});
+
+function newSeries(idea) {
+  return task('Creating the series and its characters…', async () => {
+    const se = await call('story_new', { idea, style: $('#stStyle').value });
+    toast(`Series “${se.title}” created. Press Make next part.`);
+    $('#stIdea').value = '';
+    await loadStories();
+  });
+}
+$('#btnStNew').onclick = () => {
+  const idea = $('#stIdea').value.trim();
+  if (!idea) return toast('Describe the story idea first, or pick one from Find popular stories', true);
+  newSeries(idea);
+};
+
+function partState(p) {
+  const j = jobs.find((x) => x.id === p.job_id);
+  if (!j) return '<span class="badge">deleted</span>';
+  return `<span class="badge ${esc(j.status)}">${esc(j.status === 'uploaded' ? 'live' : j.status === 'draft' ? 'ready' : j.status)}</span>`;
+}
+function renderSeries() {
+  const list = arr(story.series);
+  $('#stSeries').innerHTML = list.length ? list.map((se) => {
+    const done = arr(se.parts).length >= (se.planned || 1);
+    return `<div class="card series" data-id="${esc(se.id)}">
+      <div class="row between"><div><h3 style="margin:0">${esc(se.title)}</h3>
+        <div class="muted small">${esc(se.style === 'slow' ? 'Slow · AI pictures' : 'Fast · drawn with code')} · ${arr(se.parts).length} of ${num(se.planned)} parts</div></div>
+        <div class="row">${done ? '<span class="badge good">Story finished</span>' : `<button class="primary" data-sa="next">Make next part</button><button data-sa="rest">Make all ${se.planned - arr(se.parts).length} left</button>`}
+        <button class="ghost danger" data-sa="del">Delete</button></div></div>
+      <p>${esc(se.premise)}</p>
+      <div class="row wrap">${arr(se.characters).map((c) => `<span class="badge" style="border-left:6px solid ${esc(c.caption)}">${esc(c.name)} · ${esc(se.style === 'slow' ? 'AI picture' : c.kind.replace(/_/g, ' '))} · ${esc(c.voice)}</span>`).join('')}</div>
+      ${arr(se.parts).length ? `<ol class="parts">${arr(se.parts).map((p) => `<li>${partState(p)} <b>${esc(p.title)}</b><div class="muted small">${esc(p.summary)}</div></li>`).join('')}</ol>` : ''}
+    </div>`;
+  }).join('') : '<div class="empty">No series yet. Find popular stories or type your own idea above.</div>';
+}
+$('#stSeries').onclick = async (e) => {
+  const b = e.target.closest('[data-sa]'), card = e.target.closest('.series');
+  if (!b || !card) return;
+  const se = arr(story.series).find((x) => x.id === card.dataset.id);
+  if (b.dataset.sa === 'del') {
+    if (!b.dataset.armed) {
+      b.dataset.armed = '1';
+      b.textContent = 'Sure? Parts stay in the Library';
+      return setTimeout(() => { delete b.dataset.armed; b.textContent = 'Delete'; }, 3000);
+    }
+    await call('story_delete', { id: se.id });
+    return loadStories();
+  }
+  const count = b.dataset.sa === 'next' ? 1 : se.planned - arr(se.parts).length;
+  task(`Making ${count} part(s) of “${se.title}”…`, async () => {
+    const made = await call('story_make', { series: se.id, count, autoUpload: $('#stAuto').checked });
+    toast(`${made} part(s) made. Review them in the Library.`);
+    await loadJobs();
+    loadStories();
+  });
+};
+
 /* ---------- new channel wizard ---------- */
 let wzPicked = null;
 async function initWizard() {
@@ -1471,7 +1601,7 @@ $('#btnFluxSetup').onclick = setupFlux;
 $('#btnFluxSetup2').onclick = setupFlux;
 
 $('#btnNiches').onclick = () => task('Finding the best niches…', async () => {
-  const r = await call('niche_finder', { writer: $('#wzWriter').value });
+  const r = await call('niche_finder', { writer: $('#wzWriter').value, story: $('#wzKind').value === 'story' });
   const list = arr(r.niches);
   const lvl = { low: 'good', medium: 'mid', high: 'bad' }, rpmLvl = { high: 'good', medium: 'mid', low: 'bad' };
   $('#wzNiches').innerHTML = list.map((n, i) => {
@@ -1497,7 +1627,7 @@ $('#btnDesignNew').onclick = () => {
   const niche = $('#rbNiche').value.trim();
   if (!niche) return toast('Pick or type a niche first', true);
   task(`Designing your new “${niche}” channel…`, async () => {
-    brand = await call('rebrand', { niche, writer: $('#wzWriter').value, imageModel: $('#wzImage').value, pending: true });
+    brand = await call('rebrand', { niche, writer: $('#wzWriter').value, imageModel: $('#wzImage').value, pending: true, story: $('#wzKind').value === 'story' });
     brand.pending = true;
     renderBrand();
   });

@@ -286,7 +286,7 @@ fn gradient(dur: f64) -> Vec<String> {
 /// A background track: from the music folder in Settings, or the app's own `_music` folder. Prefers tracks tagged
 /// with the script's mood in the folder's `credits.json` ({"file.mp3": {"mood": "...", "credit": "..."}}).
 /// Returns (track, licence credit to put in the description).
-fn pick_music(s: &Settings, mood: &str) -> Option<(PathBuf, String)> {
+pub(crate) fn pick_music(s: &Settings, mood: &str) -> Option<(PathBuf, String)> {
     let folder = if s.music_dir.trim().is_empty() { crate::settings::out_dir().join("_music") } else { PathBuf::from(s.music_dir.trim()) };
     let tracks: Vec<PathBuf> = fs::read_dir(&folder)
         .ok()?

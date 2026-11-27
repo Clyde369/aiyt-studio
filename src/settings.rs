@@ -76,6 +76,32 @@ pub struct Settings {
     pub rpm: f64,
     /// Post the AI engagement comment on every short once it is public.
     pub auto_comment: bool,
+    /// Story channel settings (animated story series instead of fact shorts).
+    pub story: StoryPrefs,
+}
+
+/// A story channel makes animated story series: "fast" = drawn with code (seconds per picture), "slow" = AI pictures.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct StoryPrefs {
+    /// This channel makes stories (Autopilot and ⚡ Make 3 then make the next story parts).
+    pub enabled: bool,
+    /// fast | slow
+    pub style: String,
+    /// Target length of one part.
+    pub seconds: u32,
+    /// Slow style pictures: local (SDXL on this PC, free) | gemini (paid key).
+    pub images: String,
+    /// Kokoro voice of the narrator.
+    pub narrator_voice: String,
+    /// Parts in a new series (the last one resolves the story).
+    pub parts: u32,
+}
+
+impl Default for StoryPrefs {
+    fn default() -> Self {
+        Self { enabled: false, style: "fast".into(), seconds: 40, images: "local".into(), narrator_voice: "bm_george".into(), parts: 4 }
+    }
 }
 
 impl Default for Settings {
@@ -117,6 +143,7 @@ impl Default for Settings {
             active_channel: String::new(),
             rpm: 0.05,
             auto_comment: true,
+            story: StoryPrefs::default(),
         }
     }
 }
@@ -144,6 +171,7 @@ pub struct ChannelProfile {
     pub style_accent: String,
     pub cta_rate: u32,
     pub cta_auto: bool,
+    pub story: StoryPrefs,
 }
 
 impl Default for ChannelProfile {
@@ -157,6 +185,7 @@ impl From<&Settings> for ChannelProfile {
         Self {
             channel_about: s.channel_about.clone(), niche_query: s.niche_query.clone(), auto: s.auto.clone(), style_hook: s.style_hook,
             style_hook_color: s.style_hook_color.clone(), style_accent: s.style_accent.clone(), cta_rate: s.cta_rate, cta_auto: s.cta_auto,
+            story: s.story.clone(),
         }
     }
 }
@@ -198,6 +227,7 @@ impl Settings {
         (self.channel_about, self.niche_query, self.auto) = (p.channel_about, p.niche_query, p.auto);
         (self.style_hook, self.style_hook_color, self.style_accent) = (p.style_hook, p.style_hook_color, p.style_accent);
         (self.cta_rate, self.cta_auto) = (p.cta_rate, p.cta_auto);
+        self.story = p.story;
     }
 }
 

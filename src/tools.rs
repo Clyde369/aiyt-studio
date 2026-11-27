@@ -406,3 +406,233 @@ pub fn flux_args() -> Result<(PathBuf, Vec<String>)> {
         "--clip_l".into(), p("clip_l.safetensors"), "--t5xxl".into(), p("t5xxl-Q4_0.gguf"),
     ]))
 }
+
+// ---------- Story tools: ComfyUI + SDXL-Lightning (Slow-style pictures) and GiveMotion (the animator) ----------
+
+const COMFY_7Z: &str = "https://github.com/Comfy-Org/ComfyUI/releases/download/v0.46.0/ComfyUI_windows_portable_nvidia.7z";
+/// ByteDance SDXL-Lightning, 4 steps: ~9 s a picture on an 8 GB card. Licence: OpenRAIL++ (commercial use allowed).
+const SDXL_URL: &str = "https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step.safetensors";
+const SDXL_FILE: &str = "sdxl_lightning_4step.safetensors";
+/// Not ComfyUI's default 8188, so a ComfyUI the user runs themselves is never touched.
+const COMFY_PORT: u16 = 8189;
+/// Pinned so a new upstream release can never change (or break) rendering by surprise.
+const GIVEMOTION: &str = "givemotion@0.1.6";
+
+static COMFY: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+static COMFY_USED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn comfy_root() -> PathBuf {
+    tools_dir().join("comfyui")
+}
+fn comfy_base() -> PathBuf {
+    comfy_root().join("ComfyUI_windows_portable")
+}
+fn comfy_python() -> PathBuf {
+    comfy_base().join("python_embeded").join("python.exe")
+}
+fn sdxl_file() -> PathBuf {
+    comfy_root().join("models").join("checkpoints").join(SDXL_FILE)
+}
+
+/// Local pictures for Slow-style stories are installed.
+pub fn comfy_ready() -> bool {
+    comfy_python().exists() && sdxl_file().is_file()
+}
+
+/// One-time download: ComfyUI (~2 GB) + SDXL-Lightning (~6.5 GB). Safe to run again: skips what is there.
+pub fn setup_comfy(log: &dyn Fn(&str)) -> Result<()> {
+    if !cfg!(windows) {
+        bail!("local story pictures are set up automatically on Windows only");
+    }
+    fs::create_dir_all(comfy_root())?;
+    if !comfy_python().exists() {
+        log("Downloading ComfyUI, the local picture engine (~2 GB, one time)…");
+        let archive = comfy_root().join("comfyui.7z");
+        download_progress(COMFY_7Z, &archive, log)?;
+        log("Unpacking ComfyUI…");
+        let r = run(command(&tar_exe()).current_dir(comfy_root()).args(["-xf", "comfyui.7z"]), "tar");
+        let _ = fs::remove_file(&archive);
+        r?;
+    }
+    if !sdxl_file().is_file() {
+        log("Downloading SDXL-Lightning, the fast picture model (~6.5 GB, one time)…");
+        download_progress(SDXL_URL, &sdxl_file(), log)?;
+    }
+    comfy_paths()?;
+    log("Story pictures ready ✔ About 9 seconds a picture on your GPU, free.");
+    Ok(())
+}
+
+/// Tells ComfyUI where the models are (they live outside its folder so an upgrade keeps them).
+fn comfy_paths() -> Result<()> {
+    let models = comfy_root().join("models").to_string_lossy().replace('\\', "/");
+    fs::write(comfy_base().join("ComfyUI").join("extra_model_paths.yaml"), format!("aiyt:\n  base_path: \"{models}\"\n  checkpoints: checkpoints\n"))?;
+    Ok(())
+}
+
+fn comfy_url(path: &str) -> String {
+    format!("http://127.0.0.1:{COMFY_PORT}{path}")
+}
+
+fn comfy_up() -> bool {
+    ureq::get(&comfy_url("/system_stats")).timeout(std::time::Duration::from_secs(2)).call().is_ok()
+}
+
+fn touch_comfy() {
+    COMFY_USED.store(crate::youtube::now_secs(), std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Starts the hidden ComfyUI server if it is not running. It stops itself after 10 idle minutes (and when the app
+/// closes), so it never keeps the GPU's memory while you do other things.
+fn comfy_start(log: &dyn Fn(&str)) -> Result<()> {
+    if comfy_up() {
+        return Ok(());
+    }
+    if !comfy_ready() {
+        bail!("local story pictures are not set up yet: Stories → Set up (or choose Fast style / Gemini pictures)");
+    }
+    comfy_paths()?;
+    let err_log = File::create(comfy_root().join("comfyui.log"))?;
+    let child = command(&comfy_python().to_string_lossy())
+        .current_dir(comfy_base())
+        .args(["-s", "ComfyUI/main.py", "--listen", "127.0.0.1", "--port", &COMFY_PORT.to_string(), "--disable-auto-launch"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(err_log)
+        .spawn()
+        .context("could not start ComfyUI")?;
+    *COMFY.lock().unwrap() = Some(child);
+    touch_comfy();
+    log("Starting the local picture engine (about a minute)…");
+    let started = std::time::Instant::now();
+    while !comfy_up() {
+        if crate::llm::cancelled() {
+            comfy_stop();
+            bail!("cancelled");
+        }
+        let exited = COMFY.lock().unwrap().as_mut().is_none_or(|c| c.try_wait().ok().flatten().is_some());
+        if exited || started.elapsed().as_secs() > 300 {
+            comfy_stop();
+            let tail: String = fs::read_to_string(comfy_root().join("comfyui.log")).unwrap_or_default().chars().rev().take(800).collect::<Vec<_>>().into_iter().rev().collect();
+            bail!("the local picture engine did not start: {tail}");
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    static WATCH: std::sync::Once = std::sync::Once::new();
+    WATCH.call_once(|| {
+        std::thread::spawn(|| loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            let idle = crate::youtube::now_secs().saturating_sub(COMFY_USED.load(std::sync::atomic::Ordering::SeqCst));
+            if idle > 600 && COMFY.lock().unwrap().is_some() {
+                comfy_stop();
+            }
+        });
+    });
+    Ok(())
+}
+
+/// Stops the ComfyUI server this app started (no-op otherwise).
+pub fn comfy_stop() {
+    if let Some(mut c) = COMFY.lock().unwrap().take() {
+        if cfg!(windows) {
+            let _ = command("taskkill").args(["/T", "/F", "/PID", &c.id().to_string()]).status();
+        }
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+}
+
+/// One 768x1344 picture from SDXL-Lightning through ComfyUI's API, saved as `out` (PNG).
+pub fn comfy_image(prompt: &str, seed: u64, out: &Path, log: &dyn Fn(&str)) -> Result<()> {
+    comfy_start(log)?;
+    touch_comfy();
+    let negative = "comic strip, comic page, panels, grid, collage, split screen, multiple scenes, text, letters, words, caption, speech bubble, watermark, signature, logo, blurry, deformed, extra fingers, extra limbs, ugly, photo, realistic";
+    let wf = serde_json::json!({
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": SDXL_FILE}},
+        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["1", 1]}},
+        "3": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["1", 1]}},
+        "4": {"class_type": "EmptyLatentImage", "inputs": {"width": 768, "height": 1344, "batch_size": 1}},
+        "5": {"class_type": "KSampler", "inputs": {"model": ["1", 0], "seed": seed, "steps": 4, "cfg": 1.0, "sampler_name": "euler",
+              "scheduler": "sgm_uniform", "positive": ["2", 0], "negative": ["3", 0], "latent_image": ["4", 0], "denoise": 1.0}},
+        "6": {"class_type": "VAEDecode", "inputs": {"samples": ["5", 0], "vae": ["1", 2]}},
+        "7": {"class_type": "SaveImage", "inputs": {"images": ["6", 0], "filename_prefix": "aiyt"}}
+    });
+    let r: serde_json::Value = ureq::post(&comfy_url("/prompt")).send_json(serde_json::json!({"prompt": wf})).map_err(http_err)?.into_json()?;
+    let id = r["prompt_id"].as_str().context("ComfyUI did not accept the picture")?.to_string();
+    let started = std::time::Instant::now();
+    loop {
+        if crate::llm::cancelled() {
+            let _ = ureq::post(&comfy_url("/interrupt")).call();
+            bail!("cancelled");
+        }
+        let h: serde_json::Value = ureq::get(&comfy_url(&format!("/history/{id}"))).call().map_err(http_err)?.into_json()?;
+        let job = &h[&id];
+        if !job.is_null() {
+            if job["status"]["status_str"] == "error" {
+                bail!("the picture failed: {}", job["status"]["messages"].to_string().chars().take(600).collect::<String>());
+            }
+            let img = &job["outputs"]["7"]["images"][0];
+            let file = img["filename"].as_str().context("ComfyUI made no picture")?;
+            let resp = ureq::get(&comfy_url("/view"))
+                .query("filename", file)
+                .query("subfolder", img["subfolder"].as_str().unwrap_or(""))
+                .query("type", img["type"].as_str().unwrap_or("output"))
+                .call()
+                .map_err(http_err)?;
+            let mut bytes = vec![];
+            std::io::Read::read_to_end(&mut resp.into_reader(), &mut bytes)?;
+            fs::write(out, bytes)?;
+            let _ = fs::remove_file(comfy_base().join("ComfyUI").join("output").join(img["subfolder"].as_str().unwrap_or("")).join(file));
+            touch_comfy();
+            return Ok(());
+        }
+        if started.elapsed().as_secs() > 600 {
+            bail!("the picture took more than 10 minutes");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+    }
+}
+
+fn gm_dir() -> PathBuf {
+    tools_dir().join("givemotion")
+}
+fn gm_cli() -> PathBuf {
+    gm_dir().join("node_modules").join("givemotion").join("src").join("cli.js")
+}
+
+/// The story animator (GiveMotion, MIT) is installed. It needs Node.js.
+pub fn givemotion_ready() -> bool {
+    gm_cli().exists() && crate::on_path("node")
+}
+
+/// Installs the pinned GiveMotion into the tools folder and the headless browser it records frames with.
+pub fn setup_givemotion(log: &dyn Fn(&str)) -> Result<()> {
+    if !crate::on_path("node") {
+        bail!("story animation needs Node.js: install it (winget install OpenJS.NodeJS.LTS), then restart AIYT Studio");
+    }
+    if !gm_cli().exists() {
+        log("Installing GiveMotion, the story animator…");
+        fs::create_dir_all(gm_dir())?;
+        let prefix = gm_dir().to_string_lossy().to_string();
+        run(command("cmd").args(["/C", "npm", "install", "--prefix", &prefix, GIVEMOTION, "--no-audit", "--no-fund", "--loglevel=error"]), "npm")?;
+    }
+    log("Checking the animator's browser (downloads once if missing)…");
+    run(command("node").arg(gm_cli()).arg("install"), "GiveMotion")?;
+    log("Story animator ready ✔");
+    Ok(())
+}
+
+/// Renders `page` (an HTML composition in `dir`) to `out` (MP4) with GiveMotion.
+pub fn givemotion_render(dir: &Path, page: &str, out: &str) -> Result<()> {
+    if !givemotion_ready() {
+        bail!("the story animator is not set up yet: Stories → Set up");
+    }
+    run(command("node").current_dir(dir).arg(gm_cli()).args(["render", page, "-o", out]), "GiveMotion")?;
+    Ok(())
+}
+
+/// One frame of `page` at `t` seconds, as a PNG.
+pub fn givemotion_still(dir: &Path, page: &str, t: f64, out: &str) -> Result<()> {
+    run(command("node").current_dir(dir).arg(gm_cli()).args(["still", page, "-t", &format!("{t:.2}"), "-o", out]), "GiveMotion")?;
+    Ok(())
+}

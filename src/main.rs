@@ -8,6 +8,7 @@ mod media;
 mod pipeline;
 mod settings;
 mod stock;
+mod story;
 mod tools;
 mod trends;
 mod twitch;
@@ -157,7 +158,7 @@ fn switch_channel(app: AppHandle, id: String) -> Res<()> {
 #[tauri::command]
 async fn suggest_niches() -> Res<Value> {
     fresh();
-    blocking(|| pipeline::suggest_niches(&Settings::load())).await
+    blocking(|| pipeline::suggest_niches(&Settings::load(), false)).await
 }
 
 fn research_with_data(s: &Settings, niche: &str, count: usize, log: &dyn Fn(&str)) -> anyhow::Result<Value> {
@@ -283,23 +284,28 @@ fn run_auto_day(app: &AppHandle, day: i64) -> anyhow::Result<()> {
     auto::mark_started(day);
     let _ = app.emit("auto-changed", ());
     log(&format!("⚙ Daily automation, day {} of {}: finding {n} shorts…", day - plan.start_day + 1, plan.days));
-    // 1) A short of yours is blowing up: its follow-up goes first.
-    let smart: Vec<Value> = growth::picks().into_iter().filter(|p| p["status"] == "new").take(n).collect();
-    let mut topics: Vec<String> = smart.iter().filter_map(|p| p["topic"].as_str().map(String::from)).collect();
-    for p in &smart {
-        let _ = growth::set_status(p["video_id"].as_str().unwrap_or(""), "made");
-    }
-    // 2) Fill the rest from what is trending in general and in your niche.
-    if topics.len() < n {
-        let google = trends::google_trends("US").unwrap_or_default();
-        let chart = youtube::trending_chart(&s, "US", "").unwrap_or_default();
-        let mut s2 = s.clone();
-        let niche = trends::niche_query(&mut s2).and_then(|q| youtube::trending(&s2, &q).map(|(v, _)| v)).unwrap_or_default();
-        let picks = trends::opportunities(&s, &google, &chart, &niche)?;
-        topics.extend(picks["picks"].as_array().into_iter().flatten().filter_map(|p| p["topic"].as_str().map(String::from)));
-    }
-    let topics: Vec<String> = fresh_topics(&topics, &log).into_iter().take(n).collect();
-    let ids = topics.iter().map(|t| pipeline::create_job(t, &[])).collect::<anyhow::Result<Vec<_>>>()?;
+    let ids = if s.story.enabled {
+        // Story channel: the next parts of the current series (a new series starts when one ends).
+        story::next_parts(&s, n, &log)?
+    } else {
+        // 1) A short of yours is blowing up: its follow-up goes first.
+        let smart: Vec<Value> = growth::picks().into_iter().filter(|p| p["status"] == "new").take(n).collect();
+        let mut topics: Vec<String> = smart.iter().filter_map(|p| p["topic"].as_str().map(String::from)).collect();
+        for p in &smart {
+            let _ = growth::set_status(p["video_id"].as_str().unwrap_or(""), "made");
+        }
+        // 2) Fill the rest from what is trending in general and in your niche.
+        if topics.len() < n {
+            let google = trends::google_trends("US").unwrap_or_default();
+            let chart = youtube::trending_chart(&s, "US", "").unwrap_or_default();
+            let mut s2 = s.clone();
+            let niche = trends::niche_query(&mut s2).and_then(|q| youtube::trending(&s2, &q).map(|(v, _)| v)).unwrap_or_default();
+            let picks = trends::opportunities(&s, &google, &chart, &niche)?;
+            topics.extend(picks["picks"].as_array().into_iter().flatten().filter_map(|p| p["topic"].as_str().map(String::from)));
+        }
+        let topics: Vec<String> = fresh_topics(&topics, &log).into_iter().take(n).collect();
+        topics.iter().map(|t| pipeline::create_job(t, &[])).collect::<anyhow::Result<Vec<_>>>()?
+    };
     let _ = app.emit("jobs-changed", ());
     let slots = auto::slot_minutes(&plan, ids.len());
     let mut uploaded = 0;
@@ -883,7 +889,8 @@ fn brand_dir() -> std::path::PathBuf {
 
 /// Viral research for a niche -> AI channel redesign -> banner + profile picture. Changes nothing on YouTube.
 #[tauri::command]
-async fn rebrand(app: AppHandle, niche: String, writer: String, image_model: String, pending: bool) -> Res<Value> {
+async fn rebrand(app: AppHandle, niche: String, writer: String, image_model: String, pending: bool, story: Option<bool>) -> Res<Value> {
+    let story = story.unwrap_or(false);
     fresh();
     blocking(move || {
         let (s, log) = (with_choices(Settings::load(), &writer, &image_model), logger(app));
@@ -896,7 +903,7 @@ async fn rebrand(app: AppHandle, niche: String, writer: String, image_model: Str
             (videos, tags) = youtube::trending(&s, &niche).unwrap_or_default();
         }
         log(if pending { "AI is designing your new channel…" } else { "AI is redesigning the channel…" });
-        let mut plan = pipeline::rebrand_plan(&s, &niche, &titles, &videos, &tags)?;
+        let mut plan = pipeline::rebrand_plan(&s, &niche, &titles, &videos, &tags, story)?;
         let name = plan["names"][0].as_str().unwrap_or(&niche).to_string();
         let initials = plan["initials"].as_str().map(String::from).unwrap_or_else(|| name.chars().take(1).collect());
         // A new channel's kit waits in _brand\_pending until the channel is created and linked.
@@ -922,6 +929,7 @@ async fn rebrand(app: AppHandle, niche: String, writer: String, image_model: Str
         if pending {
             plan["writer"] = writer.into();
             plan["image_model"] = image_model.into();
+            plan["story"] = story.into();
             settings::write_atomic(&settings::config_dir().join("pending_kit.json"), &serde_json::to_string_pretty(&plan)?)?;
         }
         log("Channel plan ready");
@@ -991,12 +999,13 @@ fn pending_kit() -> Option<Value> {
 
 /// Wizard step 1: AI suggests niches, checks each against this month's real Shorts, and scores the chance of success.
 #[tauri::command]
-async fn niche_finder(app: AppHandle, writer: String) -> Res<Value> {
+async fn niche_finder(app: AppHandle, writer: String, story: Option<bool>) -> Res<Value> {
+    let story = story.unwrap_or(false);
     fresh();
     blocking(move || {
         let (s, log) = (with_choices(Settings::load(), &writer, ""), logger(app));
         log("AI is shortlisting niches…");
-        let ideas = pipeline::suggest_niches(&s)?;
+        let ideas = pipeline::suggest_niches(&s, story)?;
         let names: Vec<String> = ideas["niches"].as_array().into_iter().flatten().filter_map(|n| n["name"].as_str().map(String::from)).take(8).collect();
         let mut evidence = vec![];
         if youtube::is_connected() {
@@ -1013,7 +1022,7 @@ async fn niche_finder(app: AppHandle, writer: String) -> Res<Value> {
             }
         }
         log("AI is scoring each niche…");
-        let mut scored = pipeline::score_niches(&s, &ideas, &evidence)?;
+        let mut scored = pipeline::score_niches(&s, &ideas, &evidence, story)?;
         scored["live_data"] = (!evidence.is_empty()).into();
         Ok(scored)
     })
@@ -1056,9 +1065,21 @@ async fn launch_channel(app: AppHandle) -> Res<String> {
         let mut saved = Settings::load();
         saved.channel_about = format!("{}: {niche}. {} Content pillars: {}.", kit["names"][0].as_str().unwrap_or(""), kit["tagline"].as_str().unwrap_or(""), pillars.join(", "));
         saved.niche_query = niche.clone();
+        let story = kit["story"].as_bool() == Some(true);
+        saved.story.enabled = story;
         saved.save()?;
         s.channel_about = saved.channel_about.clone();
         s.niche_query = niche;
+        s.story = saved.story.clone();
+        if story {
+            // A story channel starts with research into what stories work in its niche, and its first series.
+            log("Finding the stories that work in this niche…");
+            let research = story::research(&s, &log)?;
+            let idea = &research["ideas"][0];
+            let se = story::new_series(&s, &format!("{}: {}", idea["title"].as_str().unwrap_or(""), idea["premise"].as_str().unwrap_or("")), &s.story.style)?;
+            let _ = std::fs::remove_file(settings::config_dir().join("pending_kit.json"));
+            return Ok(format!("Your story channel is set up. Its first series, “{}”, is ready on the Stories page: press Make next part", se.title));
+        }
         // Start hunting: the best shorts to launch with, from what is popular in the niche right now.
         log("Finding the best first shorts for the niche…");
         let topics = best_topics(&s, 6, &log).unwrap_or_default();
@@ -1099,12 +1120,17 @@ async fn quick_batch(app: AppHandle, count: usize, auto_upload: bool) -> Res<Vec
         if !youtube::is_connected() {
             anyhow::bail!("link this channel first");
         }
-        log(&format!("⚡ Finding the {count} best shorts to make for this channel…"));
-        let topics = best_topics(&s, count.clamp(1, 10), &log)?;
-        for p in growth::picks().iter().filter(|p| topics.iter().any(|t| Some(t.as_str()) == p["topic"].as_str())) {
-            let _ = growth::set_status(p["video_id"].as_str().unwrap_or(""), "made");
-        }
-        let ids = topics.iter().map(|t| pipeline::create_job(t, &[])).collect::<anyhow::Result<Vec<_>>>()?;
+        let ids = if s.story.enabled {
+            log(&format!("⚡ Writing the next {count} story parts for this channel…"));
+            story::next_parts(&s, count.clamp(1, 10), &log)?
+        } else {
+            log(&format!("⚡ Finding the {count} best shorts to make for this channel…"));
+            let topics = best_topics(&s, count.clamp(1, 10), &log)?;
+            for p in growth::picks().iter().filter(|p| topics.iter().any(|t| Some(t.as_str()) == p["topic"].as_str())) {
+                let _ = growth::set_status(p["video_id"].as_str().unwrap_or(""), "made");
+            }
+            topics.iter().map(|t| pipeline::create_job(t, &[])).collect::<anyhow::Result<Vec<_>>>()?
+        };
         let _ = app.emit("jobs-changed", ());
         run_queue(&app, &s, "script", &ids, &log, |_, id| {
             if auto_upload {
@@ -1170,6 +1196,87 @@ async fn apply_brand(description: String, keywords: Vec<String>, banner: bool, p
         Ok(format!("Channel updated{}", if made > 0 { format!(", {made} playlists created") } else { String::new() }))
     })
     .await
+}
+
+// ---------- Story channels ----------
+
+/// Everything the Stories page shows: this channel's story settings, its series, the last research and the tools.
+#[tauri::command]
+fn story_status() -> Value {
+    let s = Settings::load();
+    json!({
+        "prefs": s.story, "series": story::list(), "research": story::last_research(),
+        "tools": {"fast": story::fast_ready(), "node": on_path("node"), "animator": tools::givemotion_ready(), "pictures": tools::comfy_ready(), "gemini_key": !s.gemini_key.trim().is_empty()}
+    })
+}
+
+#[tauri::command]
+fn story_prefs(prefs: settings::StoryPrefs) -> Res<()> {
+    let mut s = Settings::load();
+    s.story = prefs;
+    s.save().map_err(err)
+}
+
+/// Installs the story animator (GiveMotion), and with `pictures` the local picture engine for the Slow style.
+#[tauri::command]
+async fn setup_story_tools(app: AppHandle, pictures: bool) -> Res<()> {
+    blocking(move || {
+        static SETUP: AtomicBool = AtomicBool::new(false);
+        if SETUP.swap(true, Ordering::SeqCst) {
+            anyhow::bail!("the story tools are already being set up");
+        }
+        let log = logger(app);
+        let r = tools::setup_givemotion(&log).and_then(|_| if pictures { tools::setup_comfy(&log) } else { Ok(()) });
+        SETUP.store(false, Ordering::SeqCst);
+        r
+    })
+    .await
+}
+
+/// The most popular story Shorts in the channel's niche, what makes them work, and original series ideas.
+#[tauri::command]
+async fn story_research(app: AppHandle) -> Res<Value> {
+    fresh();
+    blocking(move || story::research(&Settings::load(), &logger(app))).await
+}
+
+#[tauri::command]
+async fn story_new(app: AppHandle, idea: String, style: String) -> Res<Value> {
+    fresh();
+    blocking(move || {
+        if idea.trim().is_empty() {
+            anyhow::bail!("describe the story idea first");
+        }
+        logger(app)("AI is creating the series and its characters…");
+        Ok(serde_json::to_value(story::new_series(&Settings::load(), &idea, &style)?)?)
+    })
+    .await
+}
+
+/// Writes and makes the next `count` parts of a series; each one can go up as soon as it is ready.
+#[tauri::command]
+async fn story_make(app: AppHandle, series: String, count: u32, auto_upload: bool) -> Res<usize> {
+    blocking(move || {
+        let _busy = Busy::take()?;
+        let (s, log) = (Settings::load(), logger(app.clone()));
+        let ids = story::queue_parts(&s, &series, count.clamp(1, 10), &log)?;
+        if ids.is_empty() {
+            anyhow::bail!("this story is finished: start a new series");
+        }
+        let _ = app.emit("jobs-changed", ());
+        Ok(run_queue(&app, &s, "script", &ids, &log, |_, id| {
+            if auto_upload {
+                upload_one(&s, &UploadItem { id: id.into(), privacy: "public".into(), publish_at: None }, &log)?;
+            }
+            Ok(())
+        }))
+    })
+    .await
+}
+
+#[tauri::command]
+fn story_delete(id: String) -> Res<()> {
+    story::delete(&id).map_err(err)
 }
 
 fn main() {
@@ -1239,8 +1346,15 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_settings, save_settings, app_info, open_link, yt_channel, yt_connect, yt_disconnect, suggest_niches, research,
             generate, retry_job, list_jobs, save_job_meta, delete_job, open_job_folder, upload, autopilot, fetch_comments,
-            reply_comment, skip_comment, find_clips, channel_clips, twitch_clips, make_clips, rebrand, brand_art, apply_brand, cancel_task, usage_summary, list_models, channel_ideas, analytics, preview_voice, kokoro_voices, piper_voices, gpu_status, setup_gpu_voice, trends_now, trend_picks, watch_video, studio_insights, auto_status, auto_run_now, smart_picks, dismiss_pick, check_growth, monetization, published_status, list_channels, switch_channel, pending_kit, niche_finder, launch_channel, quick_batch, flux_status, setup_flux, check_update, upload_status
+            reply_comment, skip_comment, find_clips, channel_clips, twitch_clips, make_clips, rebrand, brand_art, apply_brand, cancel_task, usage_summary, list_models, channel_ideas, analytics, preview_voice, kokoro_voices, piper_voices, gpu_status, setup_gpu_voice, trends_now, trend_picks, watch_video, studio_insights, auto_status, auto_run_now, smart_picks, dismiss_pick, check_growth, monetization, published_status, list_channels, switch_channel, pending_kit, niche_finder, launch_channel, quick_batch, flux_status, setup_flux, check_update, upload_status,
+            story_status, story_prefs, setup_story_tools, story_research, story_new, story_make, story_delete
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running AIYT Studio");
+        .build(tauri::generate_context!())
+        .expect("error while starting AIYT Studio")
+        // The story picture engine is a separate process: never leave it holding the GPU after the app closes.
+        .run(|_, event| {
+            if let tauri::RunEvent::Exit = event {
+                tools::comfy_stop();
+            }
+        });
 }

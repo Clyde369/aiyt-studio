@@ -73,7 +73,7 @@ pub fn create_job(topic: &str, extra_tags: &[String]) -> Result<String> {
 
 /// Runs (or resumes) every step for a job. Existing files are reused, so a failed job can be retried cheaply.
 /// Record progress on the job (the Library shows it as a bar) and log it.
-fn stage(id: &str, k: u32, n: u32, msg: &str, log: &dyn Fn(&str)) {
+pub(crate) fn stage(id: &str, k: u32, n: u32, msg: &str, log: &dyn Fn(&str)) {
     if let Ok(mut st) = load_state(id) {
         (st.step, st.steps, st.stage) = (k, n, msg.trim_end_matches('…').to_string());
         let _ = save_state(id, &st);
@@ -94,7 +94,7 @@ fn build_job_inner(s: &Settings, id: &str, log: &dyn Fn(&str)) -> Result<()> {
     (st.step, st.steps, st.stage) = (0, if st.source_url.is_empty() { 5 } else { 7 }, "Starting…".into());
     st.error.clear();
     save_state(id, &st)?;
-    let result = if st.source_url.is_empty() { build_steps(s, id, &st, log) } else { build_clip(s, id, &st, log) };
+    let result = if crate::story::is_story(&job_dir(id)?) { crate::story::build(s, id, log) } else if st.source_url.is_empty() { build_steps(s, id, &st, log) } else { build_clip(s, id, &st, log) };
     st.status = if result.is_ok() { "draft".into() } else { "failed".into() };
     st.error = match &result {
         Err(_) if llm::cancelled() => "Cancelled. Press Retry to continue, or Delete to start over.".into(),
@@ -371,12 +371,18 @@ pub fn channel_queries(s: &Settings, titles: &[String]) -> Result<Vec<String>> {
 }
 
 /// A full channel redesign aimed at what is currently going viral in the target niche.
-pub fn rebrand_plan(s: &Settings, niche: &str, my_titles: &[String], videos: &[Value], tags: &[Value]) -> Result<Value> {
+pub fn rebrand_plan(s: &Settings, niche: &str, my_titles: &[String], videos: &[Value], tags: &[Value], story: bool) -> Result<Value> {
     let mine = if my_titles.is_empty() { "(new channel, no uploads yet)".to_string() } else { my_titles.join("\n") };
     let top: Vec<String> = videos.iter().take(20).map(|v| format!("- {} ({} views, {})", v["title"].as_str().unwrap_or(""), v["views"], v["channel"].as_str().unwrap_or(""))).collect();
     let tg: Vec<&str> = tags.iter().filter_map(|t| t["tag"].as_str()).collect();
+    let kind = if story {
+        "This is an animated STORY channel: short cartoon stories told in parts with recurring characters and cliffhangers. \
+         Name it like a story/animation channel; pillars are story series formats; first_videos are series premises.\n"
+    } else {
+        ""
+    };
     llm::generate_json(s, "research", &format!(
-        "You are a YouTube channel strategist. Think deeply. Redesign this channel so it can win in the target niche.\n\
+        "You are a YouTube channel strategist. Think deeply. Redesign this channel so it can win in the target niche.\n{kind}\
          Target niche: {niche}\nCurrent channel uploads:\n{mine}\n\
          What is going viral in the niche this month:\n{}\nTop tags: {}\n\
          Return ONLY JSON: {{\"names\": [5 short, brandable channel names], \"handles\": [3 @handle ideas matching the first name, letters/numbers/dots only], \
@@ -445,7 +451,18 @@ fn write_script(s: &Settings, topic: &str, extra_tags: &[String]) -> Result<Valu
     Ok(script)
 }
 
-pub fn suggest_niches(s: &Settings) -> Result<Value> {
+/// Niche ideas for a new channel; `story` = an animated story channel (series with recurring characters).
+pub fn suggest_niches(s: &Settings, story: bool) -> Result<Value> {
+    if story {
+        return llm::generate_json(s, "research", "You are a YouTube Shorts growth strategist for animated STORY channels. Think carefully before answering.\n\
+            Suggest 8 story niches that are booming on YouTube Shorts right now for a faceless channel that tells short animated cartoon stories \
+            in parts (recurring characters, a narrator plus character voices, cliffhangers), e.g. talking-object comedy, workplace or family comedy, \
+            relationship drama, creepy or mystery stories, animal comedy, history told as stories, life-lesson stories. \
+            Only original stories: no fan fiction, no copyrighted characters. Made for teens and adults (not kids: made-for-kids channels earn little). \
+            Advertiser-friendly so they can earn.\n\
+            Return ONLY JSON: {\"niches\": [{\"name\": short niche name, \"why\": one sentence on why it works now, \
+            \"rpm\": \"low\" | \"medium\" | \"high\", \"competition\": \"low\" | \"medium\" | \"high\", \"examples\": [3 example story series ideas]}]}");
+    }
     llm::generate_json(s, "research", "You are a YouTube Shorts growth strategist. Think carefully before answering.\n\
         Suggest 8 faceless YouTube Shorts niches that are growing right now, monetize well through the YouTube Partner Program \
         (advertiser-friendly, decent RPM), work with stock footage or AI visuals plus an AI voiceover, and are not hopelessly saturated. \
@@ -532,6 +549,7 @@ pub fn list_jobs_all() -> Vec<Value> {
             v["title"] = script["title"].as_str().unwrap_or(&st.topic).into();
             v["description"] = script["description"].clone();
             v["tags"] = script["tags"].clone();
+            v["story"] = script["story"].clone();
             v["video"] = path("short.mp4").into();
             v["thumb"] = path("thumbnail.jpg").into();
             if let Some((tok, calls, who)) = toks.get(&id) {
@@ -623,14 +641,15 @@ fn avoid_titles() -> String {
 }
 
 /// Scores niche ideas 0-100 for a NEW faceless Shorts channel, grounded in real Shorts data when available.
-pub fn score_niches(s: &Settings, ideas: &Value, evidence: &[Value]) -> Result<Value> {
+pub fn score_niches(s: &Settings, ideas: &Value, evidence: &[Value], story: bool) -> Result<Value> {
     let data = if evidence.is_empty() {
         "No live YouTube data available: estimate from your knowledge and say so.".to_string()
     } else {
         format!("Real Shorts from the last 30 days per niche (top results by views): {}", Value::from(evidence.to_vec()))
     };
+    let kind = if story { "animated story channel (cartoon stories told in parts, AI voices)" } else { "faceless channel (AI voice, stock or AI visuals)" };
     let mut v = llm::generate_json(s, "research", &format!(
-        "You are a YouTube Shorts strategist choosing a niche for a brand-new faceless channel (AI voice, stock or AI visuals). \
+        "You are a YouTube Shorts strategist choosing a niche for a brand-new {kind}. \
          Think carefully. Score each niche 0-100 for how likely a new channel is to grow AND earn: demand (views real Shorts get), \
          room for a newcomer (competition), monetization (advertiser-friendly, RPM), whether it can be made without a face or copyrighted footage, \
          and whether it is rising. Be honest: most niches deserve 40-75; only exceptional ones go above 85.\n\

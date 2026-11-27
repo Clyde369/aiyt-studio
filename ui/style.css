@@ -218,3 +218,7 @@ nav button.hot::after { content: "🔥"; margin-left: auto; font-size: 12px; }
 .quick-items .qi b { font-size: 13px; } .quick-items .qi .row button { flex: 1; padding: 6px; font-size: 12px; }
 .score { display: flex; align-items: center; gap: 8px; } .score .meter { flex: 1; height: 8px; } .score b { font-size: 22px; }
 .niche.picked { border-color: var(--accent2); box-shadow: 0 0 0 1px var(--accent2); }
+
+.series .parts { margin: 10px 0 0; padding-left: 22px; display: grid; gap: 8px; }
+.series .parts .badge { margin-right: 6px; }
+#stResearch ul { margin: 6px 0 12px; padding-left: 20px; }
