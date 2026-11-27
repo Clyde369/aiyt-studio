@@ -9,10 +9,12 @@ use std::process::{Command, Stdio};
 /// Ask the AI chosen for this job type ("script", "research", "clips", "replies") for a JSON object.
 pub fn generate_json(s: &Settings, task: &str, prompt: &str) -> Result<Value> {
     let raw = generate(s, task, prompt)?;
-    if looks_like_secret(&raw) {
+    let v = extract_json(&raw).with_context(|| format!("the AI did not return valid JSON:\n{}", raw.chars().take(1500).collect::<String>()))?;
+    // Check the raw text AND every decoded field (JSON escapes like A only show after parsing).
+    if looks_like_secret(&raw) || any_string(&v, &looks_like_secret) {
         bail!("the AI's answer contained something that looks like a key or token, so it was discarded");
     }
-    extract_json(&raw).with_context(|| format!("the AI did not return valid JSON:\n{}", raw.chars().take(1500).collect::<String>()))
+    Ok(v)
 }
 
 pub fn generate(s: &Settings, task: &str, prompt: &str) -> Result<String> {
@@ -332,21 +334,33 @@ fn cancel_kills_running_program() {
     assert!(started.elapsed().as_secs() < 5, "took {:?}", started.elapsed());
 }
 
-/// Empty working folder for AI CLIs, with a deny-everything OpenCode config.
+/// Working folder for AI CLIs: inside the app's own per-user data folder (not the shared temp folder), holding only
+/// the deny-everything OpenCode config, which is rewritten on every call so nothing else can swap it.
 fn sandbox_dir() -> Result<std::path::PathBuf> {
-    let dir = std::env::temp_dir().join("aiyt-ai-sandbox");
+    let dir = crate::settings::config_dir().join("ai-sandbox");
     std::fs::create_dir_all(&dir)?;
-    let cfg = dir.join("opencode.json");
-    if !cfg.exists() {
-        std::fs::write(&cfg, r#"{"$schema":"https://opencode.ai/config.json","permission":{"edit":"deny","bash":"deny","webfetch":"deny"}}"#)?;
+    // Anything else that appears in here is removed; the folder must stay empty apart from the config.
+    for e in std::fs::read_dir(&dir)?.flatten() {
+        if e.file_name() != "opencode.json" {
+            let p = e.path();
+            let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        }
     }
+    std::fs::write(dir.join("opencode.json"), r#"{"$schema":"https://opencode.ai/config.json","permission":{"edit":"deny","bash":"deny","webfetch":"deny","external_directory":"deny"},"tools":{"read":false,"write":false,"edit":false,"patch":false,"bash":false,"grep":false,"glob":false,"list":false,"webfetch":false,"websearch":false,"task":false,"todowrite":false,"todoread":false}}"#)?;
     Ok(dir)
 }
 
 /// Key/token shapes (Google, OpenAI, Anthropic, GitHub, OAuth refresh tokens, private keys). Last line of defence
 /// before AI text is posted (comment replies) or saved (scripts, descriptions).
 pub fn looks_like_secret(t: &str) -> bool {
-    let markers = ["AIza", "sk-ant-", "sk-proj-", "ghp_", "gho_", "github_pat_", "xoxb-", "-----BEGIN", "\"refresh_token\"", "client_secret"];
+    // Normalise first so spacing, zero-width characters or case changes cannot slip a key past the check.
+    let t: String = t
+        .chars()
+        .filter(|c| !c.is_whitespace() && !matches!(c, '\u{200B}'..='\u{200F}' | '\u{2060}' | '\u{FEFF}'))
+        .collect::<String>()
+        .to_lowercase();
+    let t = t.as_str();
+    let markers = ["aiza", "sk-ant-", "sk-proj-", "ghp_", "gho_", "github_pat_", "xoxb-", "-----begin", "\"refresh_token\"", "client_secret"];
     if markers.iter().any(|m| t.contains(m)) {
         return true;
     }
@@ -360,4 +374,23 @@ fn secret_shapes_are_caught() {
     assert!(looks_like_secret("my key is AIzaSyD-abc123"));
     assert!(looks_like_secret("token 1//0gAbCdEfGhIjKlMnOpQrStUvWxYz0123456789"));
     assert!(!looks_like_secret("Thanks for watching! The ISS orbits every 90 minutes. 1//2 of fans agree"));
+}
+
+/// True if `f` holds for any string anywhere inside `v`.
+fn any_string(v: &Value, f: &dyn Fn(&str) -> bool) -> bool {
+    match v {
+        Value::String(x) => f(x),
+        Value::Array(a) => a.iter().any(|x| any_string(x, f)),
+        Value::Object(o) => o.values().any(|x| any_string(x, f)),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn secret_filter_survives_tricks() {
+    assert!(looks_like_secret("AI za Sy D-abc")); // spaced out
+    assert!(looks_like_secret("A\u{200B}IzaSyD")); // zero-width split
+    let v: Value = serde_json::from_str(r#"{"reply": "key: AIzaSyD-abc"}"#).unwrap();
+    assert!(any_string(&v, &looks_like_secret)); // JSON escape only visible after decoding
 }

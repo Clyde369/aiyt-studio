@@ -16,7 +16,9 @@ param(
   # Also refresh the installed copy in %LOCALAPPDATA%\AIYT Studio (skipped automatically while it is running).
   [switch]$UpdateLocal
 )
-$ErrorActionPreference = "Stop"
+# Native tools (cargo, git) write progress to stderr; Windows PowerShell 5.1 would treat that as fatal under "Stop",
+# so failures are detected from exit codes instead.
+$ErrorActionPreference = "Continue"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "Version must look like 1.2.3" }
@@ -45,7 +47,9 @@ git add -A
 git commit -m "Release v$Version$(if ($Notes) { ": $Notes" })" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git tag "v$Version"
 git push origin HEAD
+if ($LASTEXITCODE -ne 0) { throw "git push failed" }
 git push origin "v$Version"
+if ($LASTEXITCODE -ne 0) { throw "pushing the tag failed" }
 $body = if ($Notes) { $Notes } else { "AIYT Studio v$Version" }
 $body += "`n`n**Install:** download the setup exe below (or the portable exe). Needs FFmpeg: ``winget install Gyan.FFmpeg``. Windows may warn that the app is unsigned: More info → Run anyway."
 gh release create "v$Version" $installer.FullName $portable --repo $Repo --title "AIYT Studio v$Version" --notes $body
