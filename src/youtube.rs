@@ -872,3 +872,22 @@ fn live_stats_live() {
     let t = std::time::Instant::now();
     println!("{} in {:.1}s (cached upload list)", live_stats(&s).unwrap(), t.elapsed().as_secs_f64());
 }
+
+/// Real Shorts demand for a list of niches (NICHES="a|b|c"): `cargo test niche_scan_live -- --ignored --nocapture`
+#[cfg(test)]
+#[test]
+#[ignore]
+fn niche_scan_live() {
+    let _ = crate::settings::CONFIG_DIR.set(std::path::PathBuf::from(std::env::var("APPDATA").unwrap()).join("com.aiyt.studio"));
+    let s = Settings::load();
+    for n in std::env::var("NICHES").unwrap().split('|') {
+        let (videos, _) = match trending(&s, n) { Ok(v) => v, Err(e) => { println!("{n}: ERROR {e:#}"); continue; } };
+        let mut views: Vec<u64> = videos.iter().filter_map(|v| v["views"].as_u64()).collect();
+        views.sort_unstable_by(|a, b| b.cmp(a));
+        let top10 = &views[..views.len().min(10)];
+        let channels: std::collections::HashSet<&str> = videos.iter().filter_map(|v| v["channel"].as_str()).collect();
+        println!("NICHE|{n}|found={}|median_top10={}|best={}|over1M={}|over100k={}|channels={}|ex={}", views.len(), top10.get(top10.len() / 2).copied().unwrap_or(0), views.first().copied().unwrap_or(0),
+            views.iter().filter(|v| **v >= 1_000_000).count(), views.iter().filter(|v| **v >= 100_000).count(), channels.len(),
+            videos.iter().take(3).map(|v| format!("{} ({})", v["title"].as_str().unwrap_or(""), v["views"])).collect::<Vec<_>>().join(" ;; "));
+    }
+}
