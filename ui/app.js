@@ -32,46 +32,74 @@ function toast(msg, isErr) {
   setTimeout(() => t.remove(), isErr ? 9000 : 4000);
 }
 
-// Making/uploading shorts uses the CPU, GPU and your upload quota, so only one of those runs at a time.
-// Everything else (research, trends, analytics, downloads, previews…) runs alongside.
-const HEAVY = new Set(['generate', 'autopilot', 'upload', 'make_clips', 'retry_job', 'auto_run_now', 'story_make']);
+// Making/uploading shorts uses the CPU, GPU and your upload quota, so those wait their turn in the app's queue
+// (one at a time, for any channel). Everything else (research, trends, analytics, previews…) runs alongside.
+const HEAVY = new Set(['generate', 'autopilot', 'upload', 'make_clips', 'retry_job', 'auto_run_now', 'story_make', 'quick_batch', 'formula_make']);
 let heavyRunning = 0;
 async function call(cmd, args = {}, { quiet } = {}) {
   const heavy = HEAVY.has(cmd);
-  if (heavy && heavyRunning) {
-    toast('Shorts are still being made or uploaded. This can start when that finishes (or press Cancel).', true);
-    throw new Error('busy');
-  }
-  if (heavy) {
-    heavyRunning++;
-    updateCancel();
-  }
+  if (heavy) heavyRunning++;
   try {
     return await invoke(cmd, args);
   } catch (e) {
-    if (!quiet && !(cancelling && String(e).includes('cancelled'))) toast(String(e), true);
+    const s = String(e);
+    if (!quiet && !(cancelling && s.includes('cancelled')) && !s.includes('removed from the queue')) toast(s, true);
     throw e;
   } finally {
-    if (heavy) {
-      heavyRunning--;
-      updateCancel();
-    }
+    if (heavy) heavyRunning--;
   }
 }
 
 function log(m) {
   const p = $('#log');
-  p.textContent += m + '\n';
+  p.textContent = (p.textContent + m + '\n').slice(-60000);
   p.scrollTop = p.scrollHeight;
   $('#lastLog').textContent = m;
 }
 
+/* ---------- queue window: every task on every channel ---------- */
+let qState = [];
+const since = (t) => mmss(Math.max(0, Date.now() / 1000 - t));
+function renderQwin() {
+  const run = qState.find((t) => t.started_at), waiting = qState.length - (run ? 1 : 0);
+  $('#activity').classList.toggle('idle', !qState.length && !running);
+  $('#qRunTitle').textContent = run ? `${run.label}${run.channel_title ? ` · ${run.channel_title}` : ''}` : running ? 'Working…' : 'Ready';
+  $('#qWait').textContent = waiting ? `+${waiting} waiting` : '';
+  $('#qWait').classList.toggle('hidden', !waiting);
+  $('#qList').innerHTML = qState.map((t) => `<div class="qitem${t.started_at ? ' run' : ''}"><span class="qdot"></span><div class="grow"><b>${esc(t.label)}</b>
+      <small>${esc(t.channel_title || 'This channel')} · ${t.started_at ? `running ${since(t.started_at)}` : `waiting ${since(t.queued_at)}`}</small></div>
+      ${t.started_at ? '' : `<button class="ghost small" data-qrm="${t.id}" title="Take it out of the queue">✕</button>`}</div>`).join('');
+  if (!run && !running) $('#lastLog').textContent = 'Nothing running.';
+  else if ($('#lastLog').textContent === 'Nothing running.') $('#lastLog').textContent = 'Working… (open the activity log for every step)';
+  $('#spinner').classList.toggle('hidden', !run && !running);
+  updateCancel();
+  renderQueue();
+}
+listen('queue-state', (e) => {
+  qState = arr(e.payload);
+  renderQwin();
+});
+invoke('queue_state').then((q) => ((qState = arr(q)), renderQwin())).catch(() => {});
+setInterval(() => qState.length && renderQwin(), 5000);
+$('#qList').onclick = (e) => {
+  const b = e.target.closest('[data-qrm]');
+  if (b) call('queue_remove', { id: +b.dataset.qrm }).then(() => toast('Taken out of the queue'));
+};
+$('#btnLog').onclick = (e) => {
+  e.stopPropagation();
+  $('#log').classList.toggle('hidden');
+  $('#log').scrollTop = $('#log').scrollHeight;
+};
+// Starts as a slim pill (it must not cover the page); click it to see the whole queue.
+$('#activity').classList.toggle('min', localStorage.getItem('aiyt-qmin') !== '0');
+
 /** Background work: spinner while anything runs; only the clicked button waits, the rest of the app stays usable. */
 let cancelling = false, running = 0;
 function updateCancel() {
-  // Cancel stops the short-making/uploading job (the one that can take a long time).
-  const show = heavyRunning > 0;
+  // Cancel stops the running task (the queue then carries on with the next one).
+  const show = qState.some((t) => t.started_at);
   $('#btnCancel').classList.toggle('hidden', !show);
+  if (!show) cancelling = false;
   if (show && !cancelling) $('#btnCancel').disabled = false;
 }
 async function task(label, fn) {
@@ -84,14 +112,13 @@ async function task(label, fn) {
   running++;
   busy = true;
   if (!heavyRunning) cancelling = false;
-  $('#spinner').classList.remove('hidden');
-  $('#activity').classList.add('open');
+  renderQwin();
   log(label);
   try {
     await flushSave();
     return await fn();
   } catch (e) {
-    if (!cancelling && String(e) !== 'Error: busy') log('✖ ' + e);
+    if (!cancelling) log('✖ ' + e);
   } finally {
     running--;
     busy = running > 0;
@@ -109,22 +136,24 @@ async function task(label, fn) {
       renderQueue();
     }
     loadUsage(false);
-    $('#spinner').classList.toggle('hidden', running === 0);
-    updateCancel();
+    renderQwin();
   }
 }
 
 $('#btnCancel').onclick = (e) => {
-  e.stopPropagation(); // don't toggle the activity panel
+  e.stopPropagation(); // don't toggle the queue window
   cancelling = true;
   e.currentTarget.disabled = true;
   log('Cancelling…');
   invoke('cancel_task');
 };
 
+// Results and problems pop up as toasts; every step stays in the queue window's activity log.
+const TOASTED = /^\s*(✔|✖|⏳|💬|⚙|■|🔥)/;
 listen('log', (e) => {
   log(e.payload);
-  if (busy) refreshSoon(); // step progress lives in each job's file
+  if (TOASTED.test(e.payload)) toast(e.payload.trim(), e.payload.trim().startsWith('✖'));
+  if (busy || qState.length) refreshSoon(); // step progress lives in each job's file
 });
 listen('usage-changed', () => loadUsage(false));
 let refreshTimer, queue = { index: 0, total: 0, id: null };
@@ -141,7 +170,7 @@ listen('queue', (e) => {
 });
 /** Overall bar: finished items plus the current item's step fraction. */
 function renderQueue() {
-  const show = busy && queue.total > 0 && queue.index < queue.total;
+  const show = qState.some((t) => t.started_at) && queue.total > 0 && queue.index < queue.total;
   $('#qbar').classList.toggle('hidden', !show);
   $('#qtext').classList.toggle('hidden', !show);
   if (!show) return;
@@ -158,6 +187,7 @@ function show(page) {
   if (page === 'library' || page === 'published') loadJobs();
   if (page === 'published') loadYtState();
   if (page === 'analytics') {
+    loadAll();
     loadMon().then(renderMonetization);
     loadForecast();
     loadFormula();
@@ -166,7 +196,7 @@ function show(page) {
 }
 $$('nav button').forEach((b) => (b.onclick = () => show(b.dataset.page)));
 $('#channel').onclick = () => show('settings');
-$('#activityBar').onclick = () => $('#activity').classList.toggle('open');
+$('#activityBar').onclick = () => localStorage.setItem('aiyt-qmin', $('#activity').classList.toggle('min') ? '1' : '0');
 document.addEventListener('click', (e) => {
   const a = e.target.closest('[data-link]');
   if (a) {
@@ -1303,25 +1333,64 @@ $('#btnStudio').onclick = () => {
   });
 };
 
+/* ---------- all channels at a glance ---------- */
+async function loadAll() {
+  const list = arr(await call('channels_overview', {}, { quiet: true }).catch(() => null));
+  if (!list.length) return ($('#allBody').textContent = 'Link a channel in Settings to see its numbers here.');
+  const now = Date.now() / 1000;
+  const cell = (v, f = num) => (v == null || v === '' ? '<span class="muted">–</span>' : f(v));
+  $('#allBody').innerHTML = `<div class="tablewrap"><table class="an-table all-table"><tr><th>Channel</th><th class="num">Subs</th><th class="num">Views</th><th class="num">Likes</th>
+      <th class="num" title="Views in the last 28 days (YouTube Analytics, about 2 days behind)">28d views</th><th class="num" title="Views in the last 7 days">7d views</th>
+      <th class="num" title="Average % of each short watched, last 28 days">Retention</th><th class="num" title="Subscribers gained minus lost, last 28 days">Subs 28d</th>
+      <th class="num" title="Uploads in the last 24 hours (YouTube's daily limit for this channel)">Uploads</th><th>Status</th></tr>
+    ${list.map((c) => {
+      const st = c.stats || {}, d28 = st.d28 || {}, d7 = st.d7 || {};
+      const net = d28.subscribersGained == null ? null : (d28.subscribersGained || 0) - (d28.subscribersLost || 0);
+      const status = !c.connected ? '<span class="badge">not linked</span>'
+        : c.error ? `<span class="badge failed" title="${esc(c.error)}">needs attention</span>`
+        : c.blocked_until > now ? `<span class="badge" title="YouTube's daily upload limit is used up; uploads resume ${esc(fmt(new Date(c.blocked_until * 1000)))}">⏳ until ${esc(new Date(c.blocked_until * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}</span>`
+        : c.autorun ? '<span class="badge good">🔁 auto</span>' : '';
+      return `<tr class="${c.selected ? 'sel' : ''}" data-ch="${esc(c.id)}" title="${c.selected ? 'The channel you are on' : 'Click to switch to this channel'}">
+        <td><b>${esc(c.title || c.id)}</b>${c.story ? ' <span class="muted small">stories</span>' : ''}</td>
+        <td class="num">${cell(st.subs)}</td><td class="num">${cell(st.views)}</td><td class="num">${cell(st.likes)}</td>
+        <td class="num">${cell(d28.views)}</td><td class="num">${cell(d7.views)}</td>
+        <td class="num">${cell(d28.averageViewPercentage, (v) => `${Math.round(v)}%`)}</td>
+        <td class="num">${cell(net, (v) => (v > 0 ? '+' : '') + num(v))}</td>
+        <td class="num">${num(c.today)}${c.cap ? ` / ${num(c.cap)}` : ''}</td><td>${status}</td></tr>`;
+    }).join('')}</table></div>
+    ${list.some((c) => c.stats && c.stats.analytics_error) ? '<p class="note">Some channels have no 28-day numbers yet: reconnect them in Settings to allow YouTube Analytics.</p>' : ''}`;
+}
+$('#btnAll').onclick = () => loadAll().then(() => toast('Channels refreshed'));
+$('#allBody').onclick = async (e) => {
+  const tr = e.target.closest('[data-ch]');
+  if (!tr || tr.classList.contains('sel')) return;
+  await call('switch_channel', { id: tr.dataset.ch });
+  location.reload();
+};
+
 /* ---------- smart picks (a short is blowing up → follow-up) ---------- */
 async function loadSmartPicks() {
   const picks = arr(await call('smart_picks', {}, { quiet: true }).catch(() => []));
+  // One slim line per pick; the reasons are in the tooltip.
   const html = picks.length
-    ? picks.slice(0, 3).map((p, i) => `<div class="card smart"><div class="row between"><div>
-        <div class="muted small">${p.kind === 'starter' ? '🚀 Launch idea for your new channel' : ''}</div><div class="muted small ${p.kind === 'starter' ? 'hidden' : ''}">🔥 Your short “${esc(p.video_title)}” is taking off: ${num(p.rate)} views/hour (${esc(p.ratio)}× your normal)${p.retention != null ? `, ${Math.round(p.retention)}% viewed` : ''}, ${num(p.comments)} comments</div>
-        <h3 style="margin:6px 0 2px">Top pick: ${esc(p.topic)}</h3><div class="muted small">${esc(p.why)}</div></div>
-        <div class="row"><button class="ghost" data-dismiss="${i}">Dismiss</button><button class="primary" data-make="${i}">Create &amp; review</button></div></div></div>`).join('')
+    ? `<div class="picks">${picks.slice(0, 3).map((p, i) => {
+        const why = p.kind === 'starter' ? `Launch idea for your new channel. ${p.why || ''}`
+          : `Your short “${p.video_title}” is taking off: ${num(p.rate)} views/hour (${p.ratio}× your normal)${p.retention != null ? `, ${Math.round(p.retention)}% viewed` : ''}, ${num(p.comments)} comments. ${p.why || ''}`;
+        return `<div class="pick" title="${esc(why)}"><span>${p.kind === 'starter' ? '🚀' : '🔥'}</span><span class="grow ellip"><b>${esc(p.topic)}</b>
+          <span class="muted small">${p.kind === 'starter' ? 'launch idea' : `follow-up to “${esc(p.video_title)}” · ${esc(p.ratio)}× normal`}</span></span>
+          <button class="small primary" data-make="${i}">Make</button><button class="ghost small" data-dismiss="${i}" title="Dismiss">✕</button></div>`;
+      }).join('')}</div>`
     : '';
   $$('.smartBox').forEach((box) => {
     box.innerHTML = html;
     $$('[data-make]', box).forEach((b) => (b.onclick = () => {
       const p = picks[b.dataset.make];
-      task(`Making the follow-up to “${p.video_title}”…`, async () => {
+      // Dismiss first so the pick leaves the list while the short waits in the queue.
+      call('dismiss_pick', { videoId: p.video_id }).then(loadSmartPicks).catch(() => {});
+      toast('Added to the queue');
+      task(`Making the follow-up to “${p.video_title || p.topic}”…`, async () => {
         await call('generate', { topics: [p.topic], tags: [] });
-        await call('dismiss_pick', { videoId: p.video_id });
-        loadSmartPicks();
         toast('Follow-up ready. Review it in the Library, then publish.');
-        show('library');
       });
     }));
     $$('[data-dismiss]', box).forEach((b) => (b.onclick = async () => {
@@ -1554,18 +1623,45 @@ async function loadStories() {
   if ($('#stNarrator').options.length) $('#stNarrator').value = p.narrator_voice || 'bm_george';
   // This channel's story niche (empty until worked out: then Find popular stories reads the channel itself).
   if (document.activeElement !== $('#stNiche')) $('#stNiche').value = (story.research && story.research.niche) || story.niche || '';
+  $('#stAutorun').checked = !!(p.enabled && p.autorun);
+  renderAutoState();
   renderStoryTools();
   if (story.research) renderStoryResearch(story.research);
   renderSeries();
 }
+function renderAutoState() {
+  const a = story.auto || {}, on = $('#stAutorun').checked;
+  $('#stAutoCard').classList.toggle('on', on);
+  const resume = a.blocked_until > a.now ? fmt(new Date(a.blocked_until * 1000)) : '';
+  $('#stAutoState').textContent = !on
+    ? "Off. Turn it on and the app makes the next part of your story and publishes it, part after part, until YouTube's daily upload limit for this channel, then carries on when the limit resets. When a story ends it starts a new one from what is popular now. Runs while this app is open."
+    : !a.connected ? 'On, but this channel is not linked to YouTube: link it in Settings.'
+    : resume ? `On · daily upload limit reached. Carries on at ${resume}.`
+    : a.running ? 'On · making and publishing parts now (see the queue, bottom right).'
+    : 'On · starting within a minute.';
+}
+$('#stAutorun').onchange = async () => {
+  if ($('#stAutorun').checked && !info.connected) {
+    $('#stAutorun').checked = false;
+    return toast('Link this channel to YouTube in Settings first', true);
+  }
+  if ($('#stAutorun').checked) $('#stEnabled').value = 'true'; // auto-publishing stories makes this a story channel
+  await saveStoryPrefs();
+  toast($('#stAutorun').checked ? 'Auto make & publish is on for this channel' : 'Auto make & publish is off. A part being made now still finishes (press Cancel to stop it).');
+  loadStories();
+};
+listen('story-changed', () => $('#page-stories').classList.contains('active') && loadStories());
 function storyPrefs() {
   return { enabled: $('#stEnabled').value === 'true', style: $('#stStyle').value, seconds: +$('#stSecs').value, images: $('#stImages').value,
-    narrator_voice: $('#stNarrator').value || 'bm_george', parts: Math.max(1, Math.min(50, +$('#stParts').value || 10)) };
+    narrator_voice: $('#stNarrator').value || 'bm_george', parts: Math.max(1, Math.min(50, +$('#stParts').value || 10)),
+    autorun: $('#stEnabled').value === 'true' && $('#stAutorun').checked };
 }
 async function saveStoryPrefs() {
   $('#stSecsOut').textContent = `${$('#stSecs').value}s`;
   await call('story_prefs', { prefs: storyPrefs() });
   story.prefs = storyPrefs();
+  $('#stAutorun').checked = story.prefs.autorun;
+  renderAutoState();
   renderStoryTools();
 }
 ['#stEnabled', '#stStyle', '#stSecs', '#stParts', '#stImages', '#stNarrator'].forEach((s) => ($(s).onchange = saveStoryPrefs));
@@ -1586,7 +1682,7 @@ function renderStoryTools() {
   }
   $('#stSetup').innerHTML = html ? `<div class="card smart"><div class="small">${html}</div></div>` : '';
   if ($('#btnStSetup')) $('#btnStSetup').onclick = () => {
-    toast('Setting up the story tools in the background. You can keep working; progress is in the activity bar.');
+    toast('Setting up the story tools in the background. You can keep working; progress is in the queue window (bottom right).');
     task('Setting up the story tools…', async () => {
       await call('setup_story_tools', { pictures: slowLocal && !t.pictures });
       toast('Story tools ready');
@@ -1699,7 +1795,7 @@ async function renderImageState() {
 }
 $('#wzImage').onchange = renderImageState;
 const setupFlux = () => {
-  toast('Downloading FLUX (~10 GB) in the background. You can keep working; progress is in the activity bar.');
+  toast('Downloading FLUX (~10 GB) in the background. You can keep working; progress is in the queue window (bottom right).');
   task('Setting up local FLUX…', async () => {
     await call('setup_flux');
     toast('FLUX is ready: AI images are now free and made on your GPU.');

@@ -163,6 +163,11 @@
     <section class="page" id="page-stories">
       <header><h1>Stories</h1><p>Animated story series told in parts. The AI studies the most popular stories in your niche, writes original series with recurring characters, and continues the storyline part after part.</p></header>
       <div id="stSetup"></div>
+      <div class="card auto-card" id="stAutoCard">
+        <div class="row between"><div><h3 style="margin:0">🔁 Auto make &amp; publish</h3>
+          <div class="muted small" id="stAutoState">Makes the next part of your current story and publishes it (parts already made but not posted go first), part after part, until YouTube's daily upload limit for this channel. Then it waits and carries on when the limit resets. When a story ends it starts a new one from what is popular. Runs while this app is open.</div></div>
+          <label class="switch"><input type="checkbox" id="stAutorun" aria-label="Auto make and publish" /><span></span></label></div>
+      </div>
       <div class="card">
         <h3>This channel's stories</h3>
         <div class="grid4">
@@ -253,6 +258,8 @@
     <section class="page" id="page-analytics">
       <header class="row between"><div><h1>Analytics</h1><p>How your channel is doing, with estimated Shorts revenue. Numbers come from YouTube; revenue is an estimate from your RPM setting.</p></div>
         <button class="primary" id="btnAnalytics">Refresh</button></header>
+      <div class="card" id="allCard"><div class="row between"><h3 style="margin:0">📺 All your channels</h3><button class="ghost small" id="btnAll">Refresh</button></div>
+        <div id="allBody" class="muted small" style="margin-top:8px">Loading every channel…</div></div>
       <div class="card" id="monCard"><span class="muted small">Loading your progress…</span></div>
       <div class="card" id="formulaCard">
         <div class="row between"><h3 style="margin:0">🧪 Your winning formula <span class="hint">what your best shorts have in common, and more shorts made exactly that way</span></h3>
@@ -348,13 +355,19 @@
       </div>
     </section>
 
-    <!-- ACTIVITY -->
-    <div class="activity" id="activity">
-      <div class="qbar hidden" id="qbar"><div id="qfill"></div></div>
-      <div class="activity-bar" id="activityBar"><span class="spinner hidden" id="spinner"></span><span class="qtext hidden" id="qtext"></span><span id="lastLog">Ready</span><button id="btnCancel" class="danger hidden" title="Stop what is running now">■ Cancel</button><span class="chev">▲</span></div>
-      <pre id="log"></pre>
-    </div>
   </main>
+
+  <!-- QUEUE: every task on every channel, running first; collapses to a pill -->
+  <div class="qwin" id="activity">
+    <div class="qhead" id="activityBar" title="Show or hide the queue"><span class="spinner hidden" id="spinner"></span><b id="qRunTitle">Ready</b><span class="qtext hidden" id="qtext"></span><span class="qtext hidden" id="qWait"></span><span class="chev">▾</span></div>
+    <div class="qbody">
+      <div id="qList"></div>
+      <div class="qbar hidden" id="qbar"><div id="qfill"></div></div>
+      <div class="qstep" id="lastLog">Nothing running.</div>
+      <div class="row between"><button class="ghost small" id="btnLog">Activity log</button><button id="btnCancel" class="danger hidden" title="Stop the running task (the rest of the queue carries on)">■ Cancel running</button></div>
+      <pre id="log" class="hidden"></pre>
+    </div>
+  </div>
 
   <div class="modal hidden" id="modal"><div class="modal-box">
     <video id="mVideo" controls playsinline></video>

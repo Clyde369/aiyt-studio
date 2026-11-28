@@ -17,8 +17,12 @@ const SCOPES: &str = "https://www.googleapis.com/auth/youtube.upload https://www
 const TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
 const API: &str = "https://www.googleapis.com/youtube/v3";
 
-/// (channel id, access token, fetched at): one cached token, only valid for the channel it belongs to.
-static TOKEN: Mutex<Option<(String, String, Instant)>> = Mutex::new(None);
+/// Cached access tokens per channel id (token, fetched at): jobs for different channels run side by side with the UI.
+static TOKEN: Mutex<std::collections::BTreeMap<String, (String, Instant)>> = Mutex::new(std::collections::BTreeMap::new());
+
+fn forget_token() {
+    TOKEN.lock().unwrap().remove(&crate::settings::active_channel());
+}
 
 fn token_file() -> std::path::PathBuf {
     crate::settings::channel_dir().join("youtube_token.json")
@@ -37,7 +41,7 @@ pub fn is_connected() -> bool {
 }
 
 pub fn disconnect() -> Result<()> {
-    *TOKEN.lock().unwrap() = None;
+    forget_token();
     if token_file().exists() {
         fs::remove_file(token_file())?;
     }
@@ -45,8 +49,8 @@ pub fn disconnect() -> Result<()> {
 }
 
 fn access_token(s: &Settings) -> Result<String> {
-    if let Some((chan, tok, at)) = TOKEN.lock().unwrap().as_ref() {
-        if *chan == crate::settings::active_channel() && at.elapsed() < Duration::from_secs(45 * 60) {
+    if let Some((tok, at)) = TOKEN.lock().unwrap().get(&crate::settings::active_channel()) {
+        if at.elapsed() < Duration::from_secs(45 * 60) {
             return Ok(tok.clone());
         }
     }
@@ -59,7 +63,7 @@ fn access_token(s: &Settings) -> Result<String> {
         .context("YouTube login expired; reconnect in Settings")?
         .into_json()?;
     let access = tok["access_token"].as_str().context("no access_token from Google")?.to_string();
-    *TOKEN.lock().unwrap() = Some((crate::settings::active_channel(), access.clone(), Instant::now()));
+    TOKEN.lock().unwrap().insert(crate::settings::active_channel(), (access.clone(), Instant::now()));
     Ok(access)
 }
 
@@ -124,7 +128,7 @@ pub fn connect(s: &Settings) -> Result<String> {
     // Whichever channel was picked on Google's screen becomes a linked channel and the active one.
     let (chan_id, title) = register_channel(&access)?;
     crate::settings::write_atomic(&token_file(), &json!({"refresh_token": refresh}).to_string())?;
-    *TOKEN.lock().unwrap() = Some((chan_id, access, Instant::now()));
+    TOKEN.lock().unwrap().insert(chan_id, (access, Instant::now()));
     Ok(title)
 }
 
@@ -139,7 +143,7 @@ fn get(s: &Settings, path: &str, query: &[(&str, &str)]) -> Result<Value> {
     let resp = match call() {
         // Cached token revoked or expired early: drop it and refresh once.
         Err(e) if e.to_string().starts_with("HTTP 401") => {
-            *TOKEN.lock().unwrap() = None;
+            forget_token();
             call()?
         }
         r => r?,
@@ -152,7 +156,7 @@ fn send(s: &Settings, method: &str, url: &str, body: &Value) -> Result<Value> {
     let call = || ureq::request(method, url).set("Authorization", &format!("Bearer {}", access_token(s)?)).send_json(body).map_err(http_err);
     let resp = match call() {
         Err(e) if e.to_string().starts_with("HTTP 401") => {
-            *TOKEN.lock().unwrap() = None;
+            forget_token();
             call()?
         }
         r => r?,
@@ -571,6 +575,22 @@ pub fn live_stats(s: &Settings) -> Result<Value> {
     let st = &c["statistics"];
     let subs = (!st["hiddenSubscriberCount"].as_bool().unwrap_or(false)).then(|| num(&st["subscriberCount"]));
     Ok(json!({"subs": subs, "views": views.max(num(&st["viewCount"])), "likes": likes, "at": now}))
+}
+
+/// One channel's headline numbers for the all-channels strip: live totals, plus the last 28 and 7 days from YouTube
+/// Analytics (retention, subscribers gained, likes). Analytics lags about two days.
+pub fn overview(s: &Settings) -> Result<Value> {
+    let mut v = live_stats(s)?;
+    let end = now_secs() - 86400;
+    let day = |t: u64| rfc3339(t)[..10].to_string();
+    match analytics_rows(s, &day(end - 28 * 86400), &day(end), "views,averageViewPercentage,subscribersGained,subscribersLost,likes", "") {
+        Ok(r) => v["d28"] = r.into_iter().next().unwrap_or_default(),
+        Err(e) => v["analytics_error"] = format!("{e:#}").into(),
+    }
+    if let Ok(r) = analytics_rows(s, &day(end - 7 * 86400), &day(end), "views,subscribersGained", "") {
+        v["d7"] = r.into_iter().next().unwrap_or_default();
+    }
+    Ok(v)
 }
 
 /// Channel totals, the latest 50 uploads with their stats, and a daily history of subs/views (kept locally).

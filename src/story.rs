@@ -218,6 +218,7 @@ pub fn research(s: &Settings, niche: &str, log: &dyn Fn(&str)) -> Result<Value> 
     ))?;
     v["top_videos"] = videos.into_iter().take(12).collect::<Vec<_>>().into();
     v["niche"] = niche.into();
+    v["at"] = youtube::now_secs().into();
     write_atomic(&dir().join("research.json"), &serde_json::to_string_pretty(&v)?)?;
     Ok(v)
 }
@@ -358,16 +359,16 @@ fn write_pixel_part(s: &Settings, se: &Series, n: u32) -> Result<Value> {
     let cast: Vec<String> = se.characters.iter().map(|c| format!("- {}: {}", c.name, c.look)).collect();
     let so_far: Vec<String> = se.parts.iter().map(|p| format!("Part {}: {} (ended on: {})", p.n, p.summary, p.cliffhanger)).collect();
     let (ending, ask) = if n >= se.planned {
-        ("This is the FINAL part: resolve the story with a satisfying, surprising payoff.".to_string(), "Subscribe for the next story.".to_string())
+        ("This is the FINAL part: resolve the story with a satisfying, surprising payoff.".to_string(), "Like and subscribe for the next story.".to_string())
     } else {
-        ("The narrator's last story line is a cliffhanger that makes viewers need the next part.".to_string(), format!("Subscribe to see part {}.", words_for(n + 1)))
+        ("The narrator's last story line is a cliffhanger that makes viewers need the next part.".to_string(), format!("Like and subscribe to see part {}.", words_for(n + 1)))
     };
     let opening = if n == 1 { "Hook the viewer in the first line." } else { "Open with a one-line recap that also hooks new viewers, then continue exactly where the last part ended." };
     let prompt = format!(
         "You write viral YouTube Shorts told as a retro 8-bit pixel-art story with a narrator. Write PART {n} of {} of the series \"{}\".\n\
          Premise: {}\nCharacters:\n{}\nStory so far:\n{}\n\
          {opening} Advertiser friendly: suspense, mystery and danger are fine, but NO gore, NO blood, NO graphic violence; for teens and adults.\n\
-         Writing rules: about {words} spoken words in total (about {secs} seconds) over 6 or 7 scenes. Mostly narration (first person if the series is told by \
+         Writing rules: about {words} spoken words in total (about {secs} seconds) over 8 to 10 scenes: a new picture every 4-6 seconds, whenever something new happens or is revealed. Mostly narration (first person if the series is told by \
          its hero) plus short character lines. Short, vivid sentences; use contractions naturally (you're, we're, it's, didn't). Every scene pushes the story. \
          Keep every character consistent. {ending} Then the narrator says exactly: \"{ask}\"\n\
          Return ONLY a JSON object:\n\
@@ -664,7 +665,7 @@ pub fn build(s: &Settings, id: &str, log: &dyn Fn(&str)) -> Result<()> {
     let total = data["total"].as_f64().unwrap_or(30.0);
     let mood = script["mood"].as_str().unwrap_or("playful");
     let mut tags = vec![];
-    if let Some((track, credit)) = media::pick_music(s, mood) {
+    if let Some((track, credit)) = media::pick_music(s, mood, if pixel { "8bit" } else { "" }) {
         let ext = track.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| "mp3".into());
         fs::copy(&track, dir.join(format!("music.{ext}")))?;
         tags.push(format!("<audio src=\"music.{ext}\" data-volume=\"0.22\" data-duck=\"0.25\" data-fade-in=\"1\" data-fade-out=\"1.5\" loop></audio>"));
@@ -751,6 +752,10 @@ fn replace_word(text: &str, word: &str, with: &str) -> String {
     out
 }
 
+/// Every voice line: silence trimmed at both ends, a light broadcast polish (rumble cut, a little warmth and presence, gentle
+/// compression) and the loudness matched, so every line sits at the same level and sounds like one recording.
+const VOICE_POLISH: &str = "areverse,silenceremove=start_periods=1:start_threshold=-50dB:start_silence=0.08,areverse,highpass=f=75,equalizer=f=180:t=q:w=1:g=1.5,equalizer=f=3200:t=q:w=1.2:g=2.5,acompressor=threshold=-20dB:ratio=2.5:attack=8:release=120:makeup=2,loudnorm=I=-16:TP=-1.5:LRA=7";
+
 /// One voice line: Kokoro (CPU, so several run side by side) into audio/l{n}.wav, silence trimmed at both ends and the
 /// loudness matched (so every line sits at the same level).
 fn voice_line(s: &Settings, audio: &Path, n: usize, voice: &str, text: &str, pace: f64, overwrite: bool) -> Result<()> {
@@ -765,7 +770,7 @@ fn voice_line(s: &Settings, audio: &Path, n: usize, voice: &str, text: &str, pac
     let mut s2 = s.clone();
     (s2.voice, s2.kokoro_voice, s2.kokoro_device, s2.kokoro_pace) = ("kokoro".into(), voice.into(), "cpu".into(), pace);
     media::voice(&s2, &tmp, &|_| {})?;
-    media::ffmpeg(&tmp, &["-i", "voice.wav", "-af", "areverse,silenceremove=start_periods=1:start_threshold=-50dB:start_silence=0.08,areverse,loudnorm=I=-16:TP=-1.5:LRA=7", "-ar", "44100", "line.wav"])?;
+    media::ffmpeg(&tmp, &["-i", "voice.wav", "-af", VOICE_POLISH, "-ar", "44100", "line.wav"])?;
     fs::rename(tmp.join("line.wav"), &out)?;
     let _ = fs::remove_dir_all(&tmp);
     Ok(())

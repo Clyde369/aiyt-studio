@@ -98,11 +98,14 @@ pub struct StoryPrefs {
     pub narrator_voice: String,
     /// Parts in a new series (the last one resolves the story).
     pub parts: u32,
+    /// Auto make & publish: keep making the next part and publishing it until YouTube's daily upload limit, then
+    /// carry on once the limit resets (runs while the app is open, for every channel that has it on).
+    pub autorun: bool,
 }
 
 impl Default for StoryPrefs {
     fn default() -> Self {
-        Self { enabled: false, style: "pixel".into(), seconds: 45, images: "local".into(), narrator_voice: "bm_george".into(), parts: 10 }
+        Self { enabled: false, style: "pixel".into(), seconds: 45, images: "local".into(), narrator_voice: "bm_george".into(), parts: 10, autorun: false }
     }
 }
 
@@ -196,8 +199,34 @@ impl From<&Settings> for ChannelProfile {
 /// The channel the app is working on (its id), cached for `channel_dir()`.
 static ACTIVE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
+thread_local! {
+    /// A job pinned to the channel it was started for: everything it does (settings, login, files, uploads) stays on
+    /// that channel even if the app is switched to another channel while it runs or waits in the queue.
+    static PINNED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The channel this code is working for: the job's pinned channel, else the one picked in the app.
 pub fn active_channel() -> String {
+    PINNED.with(|p| p.borrow().clone()).unwrap_or_else(|| ACTIVE.lock().unwrap().clone())
+}
+
+/// The channel picked in the app (the UI's channel), ignoring any job pin.
+pub fn selected_channel() -> String {
     ACTIVE.lock().unwrap().clone()
+}
+
+/// Pins this thread to `id` until the guard is dropped (restoring the previous pin).
+pub fn pin_channel(id: &str) -> PinGuard {
+    let prev = PINNED.with(|p| p.replace(Some(id.to_string())));
+    PinGuard(prev)
+}
+
+pub struct PinGuard(Option<String>);
+impl Drop for PinGuard {
+    fn drop(&mut self) {
+        let prev = self.0.take();
+        PINNED.with(|p| *p.borrow_mut() = prev);
+    }
 }
 
 /// Per-channel state (login, stats, picks, automation…). Falls back to the shared folder before any channel exists.
@@ -210,6 +239,8 @@ impl Settings {
     pub fn load() -> Self {
         let mut s: Settings = fs::read_to_string(config_dir().join("settings.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         *ACTIVE.lock().unwrap() = s.active_channel.clone();
+        // A pinned job reads its own channel's profile, not the one picked in the app.
+        s.active_channel = active_channel();
         if !s.active_channel.is_empty() {
             // A channel with no profile yet starts clean (it must not inherit another channel's niche or plan).
             let p: ChannelProfile = fs::read_to_string(channel_dir().join("profile.json")).ok().and_then(|x| serde_json::from_str(&x).ok()).unwrap_or_default();
@@ -219,7 +250,13 @@ impl Settings {
     }
 
     pub fn save(&self) -> Result<()> {
-        write_atomic(&config_dir().join("settings.json"), &serde_json::to_string_pretty(self)?)?;
+        // settings.json keeps the channel picked in the app (a pinned job must never switch the app to its channel).
+        let mut base = self.clone();
+        base.active_channel = selected_channel();
+        if base.active_channel.is_empty() {
+            base.active_channel = self.active_channel.clone();
+        }
+        write_atomic(&config_dir().join("settings.json"), &serde_json::to_string_pretty(&base)?)?;
         if !self.active_channel.is_empty() && self.active_channel == active_channel() {
             write_atomic(&channel_dir().join("profile.json"), &serde_json::to_string_pretty(&ChannelProfile::from(self))?)?;
         }
@@ -304,5 +341,29 @@ pub struct AutoPlan {
 impl Default for AutoPlan {
     fn default() -> Self {
         Self { enabled: false, per_day: 3, days: 7, start_day: 0, times: vec!["12:00".into(), "16:00".into(), "19:00".into()], make_at: "08:00".into(), tz_offset_min: 0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pins_nest_and_restore() {
+        *ACTIVE.lock().unwrap() = "picked".into();
+        assert_eq!(active_channel(), "picked");
+        {
+            let _a = pin_channel("job-a");
+            assert_eq!(active_channel(), "job-a");
+            assert_eq!(selected_channel(), "picked");
+            {
+                let _b = pin_channel("job-b");
+                assert_eq!(active_channel(), "job-b");
+            }
+            assert_eq!(active_channel(), "job-a");
+            // Another thread is not pinned by this one.
+            assert_eq!(std::thread::spawn(active_channel).join().unwrap(), "picked");
+        }
+        assert_eq!(active_channel(), "picked");
     }
 }

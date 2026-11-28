@@ -247,7 +247,7 @@ pub fn render(s: &Settings, dir: &Path, dur: f64) -> Result<()> {
     args.extend(["-i".into(), "voice.wav".into()]);
     // Music matched to the script's mood; its licence credit is saved for the YouTube description.
     let mood = fs::read_to_string(dir.join("script.json")).ok().and_then(|x| serde_json::from_str::<serde_json::Value>(&x).ok()).and_then(|v| v["mood"].as_str().map(String::from)).unwrap_or_default();
-    let picked = pick_music(s, &mood);
+    let picked = pick_music(s, &mood, "");
     match picked.as_ref().map(|p| &p.1).filter(|c| !c.is_empty()) {
         Some(credit) => fs::write(dir.join("music_credit.txt"), credit)?,
         None => drop(fs::remove_file(dir.join("music_credit.txt"))),
@@ -293,8 +293,9 @@ fn gradient(dur: f64) -> Vec<String> {
 
 /// A background track: from the music folder in Settings, or the app's own `_music` folder. Prefers tracks tagged
 /// with the script's mood in the folder's `credits.json` ({"file.mp3": {"mood": "...", "credit": "..."}}).
-/// Returns (track, licence credit to put in the description).
-pub(crate) fn pick_music(s: &Settings, mood: &str) -> Option<(PathBuf, String)> {
+/// Tracks tagged with a `style` (e.g. "8bit" chiptunes) only play under videos of that style; those videos get one about
+/// half the time and an ordinary track of the mood otherwise. Returns (track, licence credit to put in the description).
+pub(crate) fn pick_music(s: &Settings, mood: &str, style: &str) -> Option<(PathBuf, String)> {
     let folder = if s.music_dir.trim().is_empty() { crate::settings::out_dir().join("_music") } else { PathBuf::from(s.music_dir.trim()) };
     let tracks: Vec<PathBuf> = fs::read_dir(&folder)
         .ok()?
@@ -307,9 +308,14 @@ pub(crate) fn pick_music(s: &Settings, mood: &str) -> Option<(PathBuf, String)> 
     }
     let info: serde_json::Value = fs::read_to_string(folder.join("credits.json")).ok().and_then(|x| serde_json::from_str(&x).ok()).unwrap_or_default();
     let name = |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let matching: Vec<&PathBuf> = tracks.iter().filter(|p| !mood.is_empty() && info[name(p)]["mood"].as_str() == Some(mood)).collect();
-    let pool: Vec<&PathBuf> = if matching.is_empty() { tracks.iter().collect() } else { matching };
     let r = std::hash::BuildHasher::hash_one(&std::collections::hash_map::RandomState::new(), 0u8) as usize;
+    let style_of = |p: &PathBuf| info[name(p)]["style"].as_str().unwrap_or("").to_string();
+    let want = if !style.is_empty() && (r >> 16) % 2 == 0 { style } else { "" };
+    let fits: Vec<&PathBuf> = tracks.iter().filter(|p| style_of(p) == want).collect();
+    let fits = if fits.is_empty() { tracks.iter().filter(|p| style_of(p).is_empty()).collect() } else { fits };
+    let fits: Vec<&PathBuf> = if fits.is_empty() { tracks.iter().collect() } else { fits };
+    let matching: Vec<&PathBuf> = fits.iter().copied().filter(|p| !mood.is_empty() && info[name(p)]["mood"].as_str() == Some(mood)).collect();
+    let pool: Vec<&PathBuf> = if matching.is_empty() { fits } else { matching };
     let track = pool[r % pool.len()];
     Some((std::path::absolute(track).ok()?, info[name(track)]["credit"].as_str().unwrap_or("").to_string()))
 }

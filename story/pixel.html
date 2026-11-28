@@ -21,6 +21,7 @@
                 radial-gradient(120% 90% at 50% 45%, transparent 55%, rgb(0 0 0 / .55) 100%); }
   #shade { position: absolute; left: 0; right: 0; bottom: 0; height: 820px; z-index: 3;
     background: linear-gradient(180deg, transparent, rgb(0 0 0 / .55) 45%, rgb(0 0 0 / .7)); }
+  #fx { position: absolute; inset: 0; z-index: 4; pointer-events: none; opacity: 0; }
   #wipe { position: absolute; inset: 0; z-index: 7; display: grid; grid-template-columns: repeat(12, 90px); grid-template-rows: repeat(22, 90px); }
   #wipe i { background: #05050c; transform: scale(0); }
   #hook { position: absolute; left: 60px; right: 60px; top: 250px; margin: 0; z-index: 6; text-align: center;
@@ -45,6 +46,7 @@
 {{SHOTS}}
   <div id="shade"></div>
   <div id="crt"></div>
+  <div id="fx" data-check="carry-ok"></div>
   <h1 id="hook"></h1>
   <div id="cta" data-check="carry-ok"><div id="sub">▶ SUBSCRIBE</div><div id="part2">PART 2 COMING ▶▶</div></div>
   <div id="box"><div id="name" data-check="carry-ok"></div><div id="text"></div><div id="cursor" data-check="carry-ok">▼</div></div>
@@ -86,6 +88,31 @@ gm.onFrame((t) => {
   let sx = 0, sy = 0;
   for (const s of shakes) { const u = t - s; if (u >= 0 && u < .6) { const a = 18 * Math.exp(-6 * u); sx += Math.round(a * Math.sin(u * 63) / 5) * 5; sy += Math.round(a * Math.cos(u * 51) / 5) * 5; } }
   document.querySelectorAll('.shot').forEach((el) => { el.style.translate = `${sx}px ${sy}px`; });
+});
+
+// Sound effects you can see: thunder flashes, static glitches, a heartbeat pulses red, a sting darkens the edges,
+// a splash flashes blue, hammer blows and knocks jolt the picture. Each lands with its sound (sounds start 0.38 s early).
+const fxEl = document.getElementById('fx');
+const hits = data.scenes.filter((s) => s.sfx && s.sfx !== 'none').map((s) => ({ kind: s.sfx, at: Math.max(0, s.start - .3) }));
+hits.filter((h) => h.kind === 'hammer' || h.kind === 'knock').forEach((h) => shakes.push(h.at + .05));
+gm.onFrame((t) => {
+  let op = 0, bg = '';
+  for (const h of hits) {
+    const u = t - h.at;
+    if (u < 0 || u > 1.2) continue;
+    if (h.kind === 'thunder') { op = Math.max(op, u < .08 ? .6 : u < .16 ? .1 : u < .24 ? .45 : Math.max(0, .3 - (u - .24) * .8)); bg = '#e8f0ff'; }
+    else if (h.kind === 'static' && u < .5) { const k = Math.floor(t * 30); op = .5; bg = `repeating-linear-gradient(180deg, rgb(255 255 255 / .4) 0 ${2 + k % 3}px, transparent 0 ${7 + (k * 7) % 11}px)`; }
+    else if (h.kind === 'heartbeat') { const beat = (x) => (x >= 0 && x < .25 ? 1 - x / .25 : 0); op = Math.max(op, .7 * Math.max(beat(u), beat(u - .35))); bg = 'radial-gradient(closest-side, transparent 40%, #b00010 100%)'; }
+    else if (h.kind === 'sting' && u < .6) { op = Math.max(op, .6 * (1 - u / .6)); bg = 'radial-gradient(closest-side, transparent 30%, #000 100%)'; }
+    else if (h.kind === 'splash' && u < .4) { op = Math.max(op, .45 * (1 - u / .4)); bg = '#5ab4ff'; }
+  }
+  fxEl.style.opacity = Math.round(op * 4) / 4; // stepped like an old console
+  fxEl.style.background = bg;
+  // Static also tears the picture sideways for a moment.
+  if (hits.some((h) => h.kind === 'static' && t >= h.at && t < h.at + .5)) {
+    const dx = (((Math.floor(t * 30) * 37) % 5) - 2) * 12;
+    document.querySelectorAll('.shot').forEach((el) => { el.style.translate = `${dx}px 0px`; });
+  }
 });
 
 // Dialogue box: one spoken line per page, words typed out in time with the voice, a name tab for characters.

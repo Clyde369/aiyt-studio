@@ -34,22 +34,93 @@ fn err(e: anyhow::Error) -> String {
     format!("{e:#}")
 }
 
-/// Only one generate/upload/autopilot task at a time.
+/// True while a heavy task (making or uploading shorts) runs.
 static BUSY: AtomicBool = AtomicBool::new(false);
-struct Busy;
+
+/// One heavy task waiting for, or having, its turn.
+#[derive(Clone, serde::Serialize)]
+struct Ticket {
+    id: u64,
+    label: String,
+    channel: String,
+    channel_title: String,
+    queued_at: u64,
+    started_at: u64,
+}
+/// Heavy tasks run one at a time, in the order they were asked for, whatever channel each is for. Every task is
+/// pinned to the channel that was picked when it was asked for, so switching channels never moves a task.
+static QUEUE: std::sync::Mutex<std::collections::VecDeque<Ticket>> = std::sync::Mutex::new(std::collections::VecDeque::new());
+static TURN: std::sync::Condvar = std::sync::Condvar::new();
+static TICKETS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// Tickets the user took out of the queue before their turn.
+static DROPPED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+static APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+
+fn emit_queue() {
+    if let Some(app) = APP.get() {
+        let _ = app.emit("queue-state", QUEUE.lock().unwrap().iter().cloned().collect::<Vec<_>>());
+    }
+}
+
+struct Busy {
+    id: u64,
+    _pin: settings::PinGuard,
+}
 impl Busy {
-    fn take() -> anyhow::Result<Busy> {
-        llm::CANCEL.store(false, Ordering::SeqCst); // a new task starts un-cancelled
-        if BUSY.swap(true, Ordering::SeqCst) {
-            anyhow::bail!("another task is still running; wait for it to finish");
+    /// Joins the queue for the channel this code works for (the app's channel, unless already pinned) and waits for
+    /// its turn. The thread stays pinned to that channel until the task ends.
+    fn wait(label: &str) -> anyhow::Result<Busy> {
+        let channel = settings::active_channel();
+        let pin = settings::pin_channel(&channel);
+        let channel_title = settings::channels().into_iter().find(|c| c.id == channel).map(|c| c.title).unwrap_or_default();
+        let id = TICKETS.fetch_add(1, Ordering::SeqCst);
+        let mut q = QUEUE.lock().unwrap();
+        q.push_back(Ticket { id, label: label.to_string(), channel, channel_title, queued_at: youtube::now_secs(), started_at: 0 });
+        drop(q);
+        emit_queue();
+        let mut q = QUEUE.lock().unwrap();
+        loop {
+            if DROPPED.lock().unwrap().contains(&id) {
+                q.retain(|t| t.id != id);
+                drop(q);
+                emit_queue();
+                anyhow::bail!("removed from the queue");
+            }
+            if q.front().is_some_and(|t| t.id == id) {
+                break;
+            }
+            q = TURN.wait_timeout(q, std::time::Duration::from_millis(500)).unwrap().0;
         }
-        Ok(Busy)
+        if let Some(t) = q.front_mut() {
+            t.started_at = youtube::now_secs();
+        }
+        drop(q);
+        BUSY.store(true, Ordering::SeqCst);
+        llm::CANCEL.store(false, Ordering::SeqCst); // a new task starts un-cancelled
+        emit_queue();
+        Ok(Busy { id, _pin: pin })
     }
 }
 impl Drop for Busy {
     fn drop(&mut self) {
+        QUEUE.lock().unwrap().retain(|t| t.id != self.id);
         BUSY.store(false, Ordering::SeqCst);
+        TURN.notify_all();
+        emit_queue();
     }
+}
+
+/// The heavy-task queue (running first), for the queue window.
+#[tauri::command]
+fn queue_state() -> Vec<Ticket> {
+    QUEUE.lock().unwrap().iter().cloned().collect()
+}
+
+/// Takes a waiting task out of the queue (the running one is stopped with Cancel instead).
+#[tauri::command]
+fn queue_remove(id: u64) {
+    DROPPED.lock().unwrap().push(id);
+    TURN.notify_all();
 }
 
 /// Long AI commands that are not queue tasks still start un-cancelled.
@@ -96,7 +167,9 @@ fn get_settings() -> Settings {
 }
 
 #[tauri::command]
-fn save_settings(settings: Settings) -> Res<()> {
+fn save_settings(mut settings: Settings) -> Res<()> {
+    // Story settings are saved by the Stories page (and turned off by Cancel); a stale copy here must not undo them.
+    settings.story = Settings::load().story;
     settings.save().map_err(err)
 }
 
@@ -154,9 +227,6 @@ fn switch_channel(app: AppHandle, id: String) -> Res<()> {
     if !settings::channels().iter().any(|c| c.id == id) {
         return Err("that channel is not linked".into());
     }
-    if BUSY.load(Ordering::SeqCst) {
-        return Err("wait for the current shorts to finish (or Cancel) before switching channels".into());
-    }
     settings::set_active_channel(&id).map_err(err)?;
     let _ = app.emit("channel-changed", ());
     Ok(())
@@ -192,7 +262,7 @@ async fn research(app: AppHandle, niche: String, count: usize) -> Res<Value> {
 #[tauri::command]
 async fn generate(app: AppHandle, topics: Vec<String>, tags: Vec<String>) -> Res<Vec<String>> {
     blocking(move || {
-        let _busy = Busy::take()?;
+        let _busy = Busy::wait(&format!("Make {} short(s)", topics.len()))?;
         let (s, log) = (Settings::load(), logger(app.clone()));
         // Queue everything first so the Library shows the whole batch, then work through it.
         let ids = fresh_topics(&topics, &log).iter().map(|t| pipeline::create_job(t, &tags)).collect::<anyhow::Result<Vec<_>>>()?;
@@ -284,11 +354,29 @@ async fn setup_gpu_voice(app: AppHandle) -> Res<()> {
 /// One day of the daily automation: smart picks first, then AI trend picks (general + your niche + YouTube's
 /// most popular), make them all, publish each at its time (right away if its time already passed).
 fn run_auto_day(app: &AppHandle, day: i64) -> anyhow::Result<()> {
-    let _busy = Busy::take()?;
-    let (s, log) = (Settings::load(), logger(app.clone()));
+    let log = logger(app.clone());
+    let Ok(_busy) = Busy::wait("Daily automation") else {
+        // Taken out of the queue: skip today's batch (otherwise the loop would queue it again a minute later).
+        auto::mark_started(day);
+        auto::record(day, 0, 0, "skipped");
+        log("Daily automation: today's batch skipped");
+        let _ = app.emit("auto-changed", ());
+        return Ok(());
+    };
+    // The wait can be long: check again that it is still wanted and not already done.
+    if auto::started(day) {
+        return Ok(());
+    }
+    let s = Settings::load();
     let plan = s.auto.clone();
     let n = plan.per_day.clamp(1, 20) as usize;
     auto::mark_started(day);
+    if s.story.enabled && s.story.autorun {
+        // Auto make & publish already posts this channel's parts in order; scheduled extras would go live out of order.
+        auto::record(day, 0, 0, "auto make & publish is on");
+        let _ = app.emit("auto-changed", ());
+        return Ok(());
+    }
     let _ = app.emit("auto-changed", ());
     log(&format!("⚙ Daily automation, day {} of {}: finding {n} shorts…", day - plan.start_day + 1, plan.days));
     let ids = if s.story.enabled {
@@ -512,7 +600,7 @@ async fn list_models(writer: String) -> Res<Vec<String>> {
 #[tauri::command]
 async fn retry_job(app: AppHandle, id: String) -> Res<()> {
     blocking(move || {
-        let _busy = Busy::take()?;
+        let _busy = Busy::wait(&"Retry a short".to_string())?;
         let r = pipeline::build_job(&Settings::load(), &id, &logger(app.clone()));
         let _ = app.emit("jobs-changed", ());
         r
@@ -635,22 +723,178 @@ fn upload_status() -> Value {
     json!({"today": uploads_last_24h().len(), "cap": c["cap"], "blocked_until": blocked_until(), "now": youtube::now_secs(), "queued": queued})
 }
 
-/// Upload shorts that were queued by the daily upload limit (runs from the background loop).
-fn retry_pending_uploads(s: &Settings, log: &dyn Fn(&str)) {
-    if !youtube::is_connected() || youtube::now_secs() < blocked_until() || BUSY.load(Ordering::SeqCst) {
-        return;
-    }
-    for job in pipeline::list_jobs().into_iter().filter(|j| j["pending_upload"] == true && j["video_id"].as_str().unwrap_or("").is_empty()) {
-        let id = job["id"].as_str().unwrap_or_default().to_string();
-        let at = job["pending_at"].as_str().filter(|a| !a.is_empty()).map(String::from);
-        let item = UploadItem { id, privacy: job["pending_privacy"].as_str().unwrap_or("public").to_string(), publish_at: at };
-        if let Err(e) = upload_one(s, &item, log) {
-            log(&format!("✖ queued upload: {e:#}"));
-        }
-        if youtube::now_secs() < blocked_until() {
+fn pending_uploads() -> Vec<Value> {
+    pipeline::list_jobs().into_iter().filter(|j| j["pending_upload"] == true && j["video_id"].as_str().unwrap_or("").is_empty()).collect()
+}
+
+/// Uploads the shorts the daily upload limit held back, oldest first, until the limit is hit again. Call with a queue turn.
+fn upload_pending(s: &Settings, log: &dyn Fn(&str)) {
+    for job in pending_uploads() {
+        if youtube::now_secs() < blocked_until() || llm::cancelled() {
             break; // capped again
         }
+        let id = job["id"].as_str().unwrap_or_default().to_string();
+        let at = job["pending_at"].as_str().filter(|a| !a.is_empty()).map(String::from);
+        let item = UploadItem { id: id.clone(), privacy: job["pending_privacy"].as_str().unwrap_or("public").to_string(), publish_at: at };
+        if let Err(e) = upload_one(s, &item, log) {
+            // Not the limit (that re-queues it): it would fail the same way every time, so stop retrying it.
+            if let Ok(mut st) = pipeline::load_state(&id) {
+                (st.pending_upload, st.error) = (false, format!("{e:#}"));
+                let _ = pipeline::save_state(&id, &st);
+            }
+            log(&format!("✖ queued upload: {e:#}"));
+        }
     }
+}
+
+/// Background loop: uploads held back by the daily limit, on their own thread so a long queue never holds up comments.
+fn retry_pending_uploads(app: &AppHandle) {
+    static RETRYING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let id = settings::active_channel();
+    if !youtube::is_connected() || youtube::now_secs() < blocked_until() || pending_uploads().is_empty() || RETRYING.lock().unwrap().contains(&id) {
+        return;
+    }
+    RETRYING.lock().unwrap().push(id.clone());
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let _pin = settings::pin_channel(&id);
+        if let Ok(_busy) = Busy::wait("Queued uploads") {
+            upload_pending(&Settings::load(), &logger(app.clone()));
+            let _ = app.emit("jobs-changed", ());
+        }
+        RETRYING.lock().unwrap().retain(|x| *x != id);
+    });
+}
+
+/// Runs `f` for every linked channel (just the app's channel if none are linked), pinned to that channel.
+fn each_channel(mut f: impl FnMut(&settings::ChannelEntry)) {
+    let mut list = settings::channels();
+    if list.is_empty() {
+        list.push(settings::ChannelEntry { id: settings::selected_channel(), ..Default::default() });
+    }
+    for c in &list {
+        let _pin = settings::pin_channel(&c.id);
+        f(c);
+    }
+}
+
+/// Channels whose Stories "Auto make & publish" is running now.
+static AUTORUNNING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Stories "Auto make & publish" for the pinned channel: make the next part, publish it, repeat until YouTube's daily
+/// upload limit. Each part takes its own queue turn, so other channels' tasks get their turns in between.
+fn story_autorun(app: &AppHandle) {
+    let log = logger(app.clone());
+    let wanted = || {
+        let s = Settings::load(); // the switch can be turned off at any time, even while waiting for a turn
+        s.story.enabled && s.story.autorun && youtube::is_connected() && youtube::now_secs() >= blocked_until()
+    };
+    let turn_off = |why: &str| {
+        let mut s = Settings::load();
+        s.story.autorun = false;
+        let _ = s.save();
+        log(&format!("■ Stories auto make & publish is off for this channel: {why}. Turn it back on in Stories."));
+        let _ = app.emit("story-changed", ());
+    };
+    let mut failed: Option<(String, u32)> = None;
+    while wanted() {
+        let Ok(_busy) = Busy::wait("Stories: auto make & publish") else {
+            turn_off("taken out of the queue");
+            break;
+        };
+        if !wanted() {
+            break;
+        }
+        let s = Settings::load();
+        // Parts held back by the daily limit go up first, so the story stays in order.
+        upload_pending(&s, &log);
+        if youtube::now_secs() < blocked_until() {
+            break;
+        }
+        // A part that was written but never made it onto YouTube is finished first: never skip a part.
+        let id = match story_unpublished() {
+            Some(id) => id,
+            None => {
+                // About once a day, look at what is popular again (in the niche last researched) so new series follow it.
+                let last = story::last_research();
+                if last.as_ref().and_then(|r| r["at"].as_u64()).is_none_or(|at| youtube::now_secs() > at + 86400) {
+                    let niche = last.as_ref().and_then(|r| r["niche"].as_str()).unwrap_or("").to_string();
+                    if let Err(e) = story::research(&s, &niche, &log) {
+                        log(&format!("  popular stories check skipped: {e:#}"));
+                    }
+                }
+                match story::next_parts(&s, 1, &log) {
+                    Ok(ids) if !ids.is_empty() => ids[0].clone(),
+                    Ok(_) => {
+                        turn_off("there is nothing left to make (start a series or press Find popular stories)");
+                        break;
+                    }
+                    Err(e) => {
+                        turn_off(&format!("the next part could not be written ({e:#})"));
+                        break;
+                    }
+                }
+            }
+        };
+        let _ = app.emit("jobs-changed", ());
+        let item = UploadItem { id: id.clone(), privacy: "public".into(), publish_at: None };
+        let ready = pipeline::load_state(&id).is_ok_and(|st| st.status == "draft");
+        let ok = if ready {
+            upload_one(&s, &item, &log).map_err(|e| log(&format!("✖ {e:#}"))).is_ok()
+        } else {
+            run_queue(app, &s, "script", std::slice::from_ref(&id), &log, |_, _| upload_one(&s, &item, &log)) == 1
+        };
+        let _ = app.emit("story-changed", ());
+        if llm::cancelled() {
+            turn_off("cancelled"); // so it does not start the next part straight away
+            break;
+        }
+        if ok {
+            failed = None;
+        } else {
+            let tries = failed.as_ref().filter(|f| f.0 == id).map_or(1, |f| f.1 + 1);
+            if tries >= 2 {
+                turn_off("a part failed twice; open it in the Library and press Retry");
+                break;
+            }
+            failed = Some((id, tries));
+        }
+    }
+    if youtube::now_secs() < blocked_until() {
+        log(&format!("⏳ Stories auto: daily upload limit reached; it carries on from {} (UTC)", youtube::to_rfc3339(blocked_until())));
+    }
+}
+
+/// The first story part (oldest first, in the two newest series) that was written but is not on YouTube or waiting
+/// for the daily limit: Auto make & publish finishes it before writing anything new.
+fn story_unpublished() -> Option<String> {
+    let mut recent: Vec<story::Series> = story::list().into_iter().take(2).collect();
+    recent.reverse();
+    recent.into_iter().flat_map(|se| se.parts).map(|p| p.job_id).find(|id| pipeline::load_state(id).is_ok_and(|st| st.video_id.is_empty() && !st.pending_upload))
+}
+
+/// Every channel at a glance: live totals, the last 28 and 7 days, uploads today and what each is doing.
+#[tauri::command]
+async fn channels_overview() -> Res<Vec<Value>> {
+    blocking(|| {
+        let mut out = vec![];
+        each_channel(|c| {
+            let s = Settings::load();
+            let connected = youtube::is_connected();
+            let mut v = json!({"id": c.id, "title": c.title, "thumb": c.thumb, "connected": connected, "story": s.story.enabled,
+                "autorun": s.story.enabled && s.story.autorun, "today": uploads_last_24h().len(), "cap": cap_state()["cap"], "blocked_until": blocked_until(),
+                "selected": c.id == settings::selected_channel()});
+            if connected {
+                match youtube::overview(&s) {
+                    Ok(o) => v["stats"] = o,
+                    Err(e) => v["error"] = format!("{e:#}").into(),
+                }
+            }
+            out.push(v);
+        });
+        Ok(out)
+    })
+    .await
 }
 
 /// YouTube's own view of each published short: processing, failed, rejected (and why), or live.
@@ -739,7 +983,7 @@ fn upload_one(s: &Settings, item: &UploadItem, log: &dyn Fn(&str)) -> anyhow::Re
 #[tauri::command]
 async fn upload(app: AppHandle, items: Vec<UploadItem>) -> Res<usize> {
     blocking(move || {
-        let _busy = Busy::take()?;
+        let _busy = Busy::wait(&format!("Upload {} short(s)", items.len()))?;
         let (s, log) = (Settings::load(), logger(app.clone()));
         let mut ok = 0;
         for item in &items {
@@ -762,7 +1006,7 @@ async fn upload(app: AppHandle, items: Vec<UploadItem>) -> Res<usize> {
 #[tauri::command]
 async fn autopilot(app: AppHandle, niche: String, count: usize, slots: Vec<String>, privacy: String) -> Res<usize> {
     blocking(move || {
-        let _busy = Busy::take()?;
+        let _busy = Busy::wait(&format!("Autopilot: {count} shorts"))?;
         let (s, log) = (Settings::load(), logger(app.clone()));
         let uploading = !slots.is_empty() || !privacy.is_empty();
         if uploading && !youtube::is_connected() {
@@ -877,7 +1121,7 @@ struct ClipItem {
 #[tauri::command]
 async fn make_clips(app: AppHandle, items: Vec<ClipItem>, tags: Vec<String>, per: u32) -> Res<usize> {
     blocking(move || {
-        let _busy = Busy::take()?;
+        let _busy = Busy::wait(&format!("Make clips from {} video(s)", items.len()))?;
         let (s, log) = (Settings::load(), logger(app.clone()));
         let mut ids = vec![];
         for it in &items {
@@ -1127,7 +1371,7 @@ fn best_topics(s: &Settings, n: usize, log: &dyn Fn(&str)) -> anyhow::Result<Vec
 #[tauri::command]
 async fn quick_batch(app: AppHandle, count: usize, auto_upload: bool) -> Res<Vec<String>> {
     blocking(move || {
-        let _busy = Busy::take()?;
+        let _busy = Busy::wait(&format!("⚡ Make {count} now"))?;
         let (s, log) = (Settings::load(), logger(app.clone()));
         if !youtube::is_connected() {
             anyhow::bail!("link this channel first");
@@ -1228,7 +1472,7 @@ async fn formula_analyse(app: AppHandle) -> Res<Value> {
 #[tauri::command]
 async fn formula_make(app: AppHandle, topics: Vec<String>, auto_upload: bool) -> Res<usize> {
     blocking(move || {
-        let _busy = Busy::take()?;
+        let _busy = Busy::wait(&format!("Make {} formula short(s)", topics.len()))?;
         let (s, log) = (Settings::load(), logger(app.clone()));
         let ids = formula::queue(&s, &fresh_topics(&topics, &log), &log)?;
         let _ = app.emit("jobs-changed", ());
@@ -1261,6 +1505,7 @@ fn story_status() -> Value {
     let s = Settings::load();
     json!({
         "prefs": s.story, "niche": s.niche_query, "series": story::list(), "research": story::last_research(),
+        "auto": {"running": AUTORUNNING.lock().unwrap().contains(&settings::active_channel()), "blocked_until": blocked_until(), "now": youtube::now_secs(), "connected": youtube::is_connected()},
         "tools": {"fast": story::fast_ready(), "node": on_path("node"), "animator": tools::givemotion_ready(), "pictures": tools::comfy_ready(), "gemini_key": !s.gemini_key.trim().is_empty()}
     })
 }
@@ -1312,7 +1557,7 @@ async fn story_new(app: AppHandle, idea: String, style: String) -> Res<Value> {
 #[tauri::command]
 async fn story_make(app: AppHandle, series: String, count: u32, auto_upload: bool) -> Res<usize> {
     blocking(move || {
-        let _busy = Busy::take()?;
+        let _busy = Busy::wait(&format!("Story: {count} part(s)"))?;
         let (s, log) = (Settings::load(), logger(app.clone()));
         let ids = story::queue_parts(&s, &series, count.clamp(1, 10), &log)?;
         if ids.is_empty() {
@@ -1343,6 +1588,7 @@ fn story_delete(id: String) -> Res<()> {
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
+            let _ = APP.set(app.handle().clone());
             let cfg = app.path().app_config_dir()?;
             let out = app.path().video_dir()?.join("AIYT");
             std::fs::create_dir_all(&cfg)?;
@@ -1353,15 +1599,20 @@ fn main() {
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_secs(30));
-                post_due_comments(&Settings::load(), &logger(handle.clone()));
-                retry_pending_uploads(&Settings::load(), &logger(handle.clone()));
+                each_channel(|_| {
+                    post_due_comments(&Settings::load(), &logger(handle.clone()));
+                    retry_pending_uploads(&handle);
+                });
                 std::thread::sleep(std::time::Duration::from_secs(570));
             });
             // Smart picks: snapshot stats every 30 minutes and plan follow-ups for shorts that take off.
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_secs(90));
-                if youtube::is_connected() && !BUSY.load(Ordering::SeqCst) {
+                each_channel(|_| {
+                    if !youtube::is_connected() {
+                        return;
+                    }
                     match growth::check(&Settings::load(), &logger(handle.clone())) {
                         Ok(n) if n > 0 => drop(handle.emit("smart-pick", n)),
                         Ok(_) => {}
@@ -1370,22 +1621,40 @@ fn main() {
                     if let Err(e) = growth::tune_cta(&Settings::load(), &logger(handle.clone())) {
                         let _ = e; // usually just "needs the Analytics permission"; nothing to tune yet
                     }
-                }
+                });
                 std::thread::sleep(std::time::Duration::from_secs(1710));
             });
             // Daily automation: check every minute whether today's batch is due.
             let handle = app.handle().clone();
+            // Each channel's runs in its own turn in the queue.
             std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_secs(60));
-                let plan = Settings::load().auto;
-                if let Some(day) = auto::due(&plan) {
-                    if BUSY.load(Ordering::SeqCst) {
-                        continue; // another task is running; try again next minute
+                each_channel(|_| {
+                    if let Some(day) = auto::due(&Settings::load().auto) {
+                        if let Err(e) = run_auto_day(&handle, day) {
+                            logger(handle.clone())(&format!("✖ daily automation: {e:#}"));
+                        }
                     }
-                    if let Err(e) = run_auto_day(&handle, day) {
-                        logger(handle.clone())(&format!("✖ daily automation: {e:#}"));
+                });
+            });
+            // Stories "Auto make & publish": one runner per channel that has it on, sharing the queue.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(45));
+                each_channel(|c| {
+                    let s = Settings::load();
+                    if !(s.story.enabled && s.story.autorun) || !youtube::is_connected() || youtube::now_secs() < blocked_until() || AUTORUNNING.lock().unwrap().contains(&c.id) {
+                        return;
                     }
-                }
+                    AUTORUNNING.lock().unwrap().push(c.id.clone());
+                    let (handle, id) = (handle.clone(), c.id.clone());
+                    std::thread::spawn(move || {
+                        let _pin = settings::pin_channel(&id);
+                        story_autorun(&handle);
+                        AUTORUNNING.lock().unwrap().retain(|x| *x != id);
+                        let _ = handle.emit("story-changed", ());
+                    });
+                });
             });
             // One-time: the old single-channel setup becomes the first linked channel (needs network; retried next start if offline).
             if let Err(e) = youtube::migrate_legacy() {
@@ -1409,7 +1678,7 @@ fn main() {
             generate, retry_job, list_jobs, save_job_meta, delete_job, open_job_folder, upload, autopilot, fetch_comments,
             reply_comment, skip_comment, find_clips, channel_clips, twitch_clips, make_clips, rebrand, brand_art, apply_brand, cancel_task, usage_summary, list_models, channel_ideas, analytics, preview_voice, kokoro_voices, piper_voices, gpu_status, setup_gpu_voice, trends_now, trend_picks, watch_video, studio_insights, auto_status, auto_run_now, smart_picks, dismiss_pick, check_growth, monetization, published_status, list_channels, switch_channel, pending_kit, niche_finder, launch_channel, quick_batch, flux_status, setup_flux, check_update, upload_status,
             story_status, story_prefs, setup_story_tools, story_research, story_new, story_make, story_delete, story_extend,
-            formula_get, formula_analyse, formula_make, formula_auto, forecast, live_stats
+            formula_get, formula_analyse, formula_make, formula_auto, forecast, live_stats, queue_state, queue_remove, channels_overview
         ])
         .build(tauri::generate_context!())
         .expect("error while starting AIYT Studio")

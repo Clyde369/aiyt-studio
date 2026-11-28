@@ -53,6 +53,10 @@ pub fn due(plan: &AutoPlan) -> Option<i64> {
 }
 
 /// Mark a day as started before working on it, so a crash or restart never makes the same day twice.
+pub fn started(day: i64) -> bool {
+    state()["last_day"].as_i64() == Some(day)
+}
+
 pub fn mark_started(day: i64) {
     let mut st = state();
     st["last_day"] = day.into();
