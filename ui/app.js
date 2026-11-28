@@ -1546,10 +1546,10 @@ async function loadStories() {
   const fastOpt = $('#stStyle option[value="fast"]'), fastOk = !!(story.tools || {}).fast;
   fastOpt.disabled = !fastOk;
   fastOpt.textContent = fastOk ? 'Fast: drawn with code' : 'Fast: drawn with code (next update)';
-  $('#stStyle').value = fastOk ? p.style || 'fast' : 'slow';
+  $('#stStyle').value = p.style === 'fast' && !fastOk ? 'pixel' : p.style || 'pixel';
   $('#stSecs').value = p.seconds || 40;
   $('#stSecsOut').textContent = `${$('#stSecs').value}s`;
-  $('#stParts').value = p.parts || 4;
+  $('#stParts').value = p.parts || 10;
   $('#stImages').value = p.images || 'local';
   if ($('#stNarrator').options.length) $('#stNarrator').value = p.narrator_voice || 'bm_george';
   // This channel's story niche (empty until worked out: then Find popular stories reads the channel itself).
@@ -1560,7 +1560,7 @@ async function loadStories() {
 }
 function storyPrefs() {
   return { enabled: $('#stEnabled').value === 'true', style: $('#stStyle').value, seconds: +$('#stSecs').value, images: $('#stImages').value,
-    narrator_voice: $('#stNarrator').value || 'bm_george', parts: Math.max(1, Math.min(12, +$('#stParts').value || 4)) };
+    narrator_voice: $('#stNarrator').value || 'bm_george', parts: Math.max(1, Math.min(50, +$('#stParts').value || 10)) };
 }
 async function saveStoryPrefs() {
   $('#stSecsOut').textContent = `${$('#stSecs').value}s`;
@@ -1572,8 +1572,10 @@ async function saveStoryPrefs() {
 $('#stSecs').oninput = () => ($('#stSecsOut').textContent = `${$('#stSecs').value}s`);
 
 function renderStoryTools() {
-  const t = story.tools || {}, slowLocal = $('#stStyle').value === 'slow' && $('#stImages').value === 'local';
-  $('#stStyleNote').textContent = $('#stStyle').value === 'fast'
+  const t = story.tools || {}, slowLocal = ['slow', 'pixel'].includes($('#stStyle').value) && $('#stImages').value === 'local';
+  $('#stStyleNote').textContent = $('#stStyle').value === 'pixel'
+    ? 'Best: retro 8-bit pixel-art pictures, an RPG dialogue box for the subtitles, every voice line checked by ear. About 4-6 minutes a part.'
+    : $('#stStyle').value === 'fast'
     ? 'Fast: characters and places are drawn with code. About 1-2 minutes a part, no picture AI needed.'
     : `Slow: one AI picture per scene (${$('#stImages').value === 'local' ? 'about 9 seconds each on your GPU' : 'Gemini, paid key'}). About 3-4 minutes a part.`;
   let html = '';
@@ -1635,8 +1637,8 @@ function renderSeries() {
     const done = arr(se.parts).length >= (se.planned || 1);
     return `<div class="card series" data-id="${esc(se.id)}">
       <div class="row between"><div><h3 style="margin:0">${esc(se.title)}</h3>
-        <div class="muted small">${esc(se.style === 'slow' ? 'Slow · AI pictures' : 'Fast · drawn with code')} · ${arr(se.parts).length} of ${num(se.planned)} parts</div></div>
-        <div class="row">${done ? '<span class="badge good">Story finished</span>' : `<button class="primary" data-sa="next">Make next part</button><button data-sa="rest">Make all ${se.planned - arr(se.parts).length} left</button>`}
+        <div class="muted small">${esc(se.style === 'pixel' ? '8-bit pixel art' : se.style === 'slow' ? 'Slow · AI pictures' : 'Fast · drawn with code')} · ${arr(se.parts).length} of ${num(se.planned)} parts</div></div>
+        <div class="row">${done ? '<span class="badge good">Story finished</span>' : `<button class="primary" data-sa="next">Make next part</button><button data-sa="rest">Make all ${se.planned - arr(se.parts).length} left</button>`}<button data-sa="more" title="Plan 5 more parts for this story">+5 parts</button>
         <button class="ghost danger" data-sa="del">Delete</button></div></div>
       <p>${esc(se.premise)}</p>
       <div class="row wrap">${arr(se.characters).map((c) => `<span class="badge" style="border-left:6px solid ${esc(c.caption)}">${esc(c.name)} · ${esc(se.style === 'slow' ? 'AI picture' : c.kind.replace(/_/g, ' '))} · ${esc(c.voice)}</span>`).join('')}</div>
@@ -1655,6 +1657,11 @@ $('#stSeries').onclick = async (e) => {
       return setTimeout(() => { delete b.dataset.armed; b.textContent = 'Delete'; }, 3000);
     }
     await call('story_delete', { id: se.id });
+    return loadStories();
+  }
+  if (b.dataset.sa === 'more') {
+    await call('story_extend', { id: se.id, more: 5 });
+    toast(`"${se.title}" now runs to ${se.planned + 5} parts`);
     return loadStories();
   }
   const count = b.dataset.sa === 'next' ? 1 : se.planned - arr(se.parts).length;

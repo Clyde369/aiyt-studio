@@ -13,8 +13,14 @@ const H: u32 = 1920;
 const FPS: u32 = 30;
 
 /// Writes `voice.wav` in `dir` from `narration.txt`.
+/// Text as the voice engines should read it: curly apostrophes and quotes made plain (Kokoro's dictionary knows
+/// "you're" only with a straight apostrophe; with a curly one it came out as gibberish), long dashes as a pause.
+pub fn speakable(text: &str) -> String {
+    text.replace(['\u{2019}', '\u{2018}', '\u{02BC}'], "'").replace(['\u{201C}', '\u{201D}'], "\"").replace(['\u{2014}', '\u{2013}'], ", ").replace("...", ",").replace('\u{2026}', ",")
+}
+
 pub fn voice(s: &Settings, dir: &Path, log: &dyn Fn(&str)) -> Result<()> {
-    let text = fs::read_to_string(dir.join("narration.txt"))?;
+    let text = speakable(&fs::read_to_string(dir.join("narration.txt"))?);
     match s.voice.as_str() {
         "gemini" => {
             // Only the script goes in: a style instruction here ("read this like…") sometimes gets spoken aloud.
@@ -88,6 +94,8 @@ fn local_tts(s: &Settings, dir: &Path, text: &str, engine: &str, gpu: bool, log:
             format!("--kokoro-dict-dir={}", p(&model, "dict")),
             format!("--kokoro-lexicon={}", p(&model, lexicon)),
             format!("--sid={sid}"),
+            // Speaking pace (story narrators read a touch slower for suspense).
+            format!("--kokoro-length-scale={:.3}", if s.kokoro_pace > 0.0 { s.kokoro_pace.clamp(0.7, 1.4) } else { 1.0 }),
         ]
     } else {
         let (onnx, voice) = crate::tools::piper_model(log, &s.piper_voice)?;

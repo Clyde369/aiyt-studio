@@ -250,6 +250,12 @@ pub fn transcribe(dir: &Path, input: &str, out_srt: &str, lang: &str, log: &dyn 
 
 /// `model_rel` is the Whisper model's path relative to `dir` (relative, so the filter needs no drive-letter escaping).
 pub fn transcribe_with(dir: &Path, input: &str, out_srt: &str, model_rel: &str, lang: &str, log: &dyn Fn(&str)) -> Result<Vec<(f64, f64, String)>> {
+    transcribe_chunked(dir, input, out_srt, model_rel, lang, 3, log)
+}
+
+/// `queue` = seconds of audio Whisper hears at a time: 3 gives finely timed subtitles; ~20 hears whole sentences
+/// (better for checking what was said: short chunks cut words in half).
+pub fn transcribe_chunked(dir: &Path, input: &str, out_srt: &str, model_rel: &str, lang: &str, queue: u32, log: &dyn Fn(&str)) -> Result<Vec<(f64, f64, String)>> {
     let model = tools_dir().join("ggml-base.bin");
     if !model.exists() {
         log("Downloading the Whisper subtitle model (~150 MB, one time)…");
@@ -258,7 +264,7 @@ pub fn transcribe_with(dir: &Path, input: &str, out_srt: &str, model_rel: &str, 
     // A fixed language: auto-detect misfires on short or music-heavy audio (captions came out in French/Tamil).
     let lang: String = lang.chars().filter(|c| c.is_ascii_alphabetic()).take(8).collect();
     let lang = if lang.is_empty() { "auto".to_string() } else { lang };
-    let af = format!("whisper=model={model_rel}:language={lang}:queue=3:destination={out_srt}:format=srt");
+    let af = format!("whisper=model={model_rel}:language={lang}:queue={queue}:destination={out_srt}:format=srt");
     crate::media::ffmpeg(dir, &["-i", input, "-vn", "-af", &af, "-f", "null", "-"])?;
     Ok(parse_srt(&fs::read_to_string(dir.join(out_srt)).unwrap_or_default()))
 }
@@ -543,10 +549,10 @@ pub fn comfy_stop() {
 }
 
 /// One 768x1344 picture from SDXL-Lightning through ComfyUI's API, saved as `out` (PNG).
-pub fn comfy_image(prompt: &str, seed: u64, out: &Path, log: &dyn Fn(&str)) -> Result<()> {
+pub fn comfy_image(prompt: &str, negative: Option<&str>, seed: u64, out: &Path, log: &dyn Fn(&str)) -> Result<()> {
     comfy_start(log)?;
     touch_comfy();
-    let negative = "comic strip, comic page, panels, grid, collage, split screen, multiple scenes, text, letters, words, caption, speech bubble, watermark, signature, logo, blurry, deformed, extra fingers, extra limbs, ugly, photo, realistic";
+    let negative = negative.unwrap_or("comic strip, comic page, panels, grid, collage, split screen, multiple scenes, text, letters, words, caption, speech bubble, watermark, signature, logo, blurry, deformed, extra fingers, extra limbs, ugly, photo, realistic");
     let wf = serde_json::json!({
         "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": SDXL_FILE}},
         "2": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["1", 1]}},

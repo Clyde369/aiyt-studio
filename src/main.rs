@@ -1329,6 +1329,12 @@ async fn story_make(app: AppHandle, series: String, count: u32, auto_upload: boo
     .await
 }
 
+/// More parts for a story that is going well (it can run as long as you like).
+#[tauri::command]
+fn story_extend(id: String, more: u32) -> Res<Value> {
+    story::extend(&id, more).and_then(|se| Ok(serde_json::to_value(se)?)).map_err(err)
+}
+
 #[tauri::command]
 fn story_delete(id: String) -> Res<()> {
     story::delete(&id).map_err(err)
@@ -1402,7 +1408,7 @@ fn main() {
             get_settings, save_settings, app_info, open_link, yt_channel, yt_connect, yt_disconnect, suggest_niches, research,
             generate, retry_job, list_jobs, save_job_meta, delete_job, open_job_folder, upload, autopilot, fetch_comments,
             reply_comment, skip_comment, find_clips, channel_clips, twitch_clips, make_clips, rebrand, brand_art, apply_brand, cancel_task, usage_summary, list_models, channel_ideas, analytics, preview_voice, kokoro_voices, piper_voices, gpu_status, setup_gpu_voice, trends_now, trend_picks, watch_video, studio_insights, auto_status, auto_run_now, smart_picks, dismiss_pick, check_growth, monetization, published_status, list_channels, switch_channel, pending_kit, niche_finder, launch_channel, quick_batch, flux_status, setup_flux, check_update, upload_status,
-            story_status, story_prefs, setup_story_tools, story_research, story_new, story_make, story_delete,
+            story_status, story_prefs, setup_story_tools, story_research, story_new, story_make, story_delete, story_extend,
             formula_get, formula_analyse, formula_make, formula_auto, forecast, live_stats
         ])
         .build(tauri::generate_context!())

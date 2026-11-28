@@ -76,6 +76,8 @@ pub struct Settings {
     pub rpm: f64,
     /// Post the AI engagement comment on every short once it is public.
     pub auto_comment: bool,
+    /// Kokoro speaking pace: 1 = normal, above 1 = slower (stories set it per voice).
+    pub kokoro_pace: f64,
     /// Story channel settings (animated story series instead of fact shorts).
     pub story: StoryPrefs,
 }
@@ -86,7 +88,7 @@ pub struct Settings {
 pub struct StoryPrefs {
     /// This channel makes stories (Autopilot and ⚡ Make 3 then make the next story parts).
     pub enabled: bool,
-    /// fast | slow
+    /// pixel (8-bit pixel art) | fast (drawn with code) | slow (AI pictures)
     pub style: String,
     /// Target length of one part.
     pub seconds: u32,
@@ -100,7 +102,7 @@ pub struct StoryPrefs {
 
 impl Default for StoryPrefs {
     fn default() -> Self {
-        Self { enabled: false, style: "fast".into(), seconds: 40, images: "local".into(), narrator_voice: "bm_george".into(), parts: 4 }
+        Self { enabled: false, style: "pixel".into(), seconds: 45, images: "local".into(), narrator_voice: "bm_george".into(), parts: 10 }
     }
 }
 
@@ -143,6 +145,7 @@ impl Default for Settings {
             active_channel: String::new(),
             rpm: 0.05,
             auto_comment: true,
+            kokoro_pace: 1.0,
             story: StoryPrefs::default(),
         }
     }
